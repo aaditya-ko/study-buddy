@@ -627,7 +627,9 @@ function CameraPane({ sessionId }: { sessionId: string }) {
     let stopped = false;
     const intensity = (sessionStorage.getItem(`intensity:${sessionId}`) ??
       "standard") as "minimal" | "standard" | "high";
-    const base = intensity === "minimal" ? 15 : intensity === "high" ? 6 : 10; // seconds
+    // Emotion check frequency (in seconds)
+    // Adjust these values to change how often the camera analyzes your expression
+    const base = intensity === "minimal" ? 15 : intensity === "high" ? 3 : 7; // seconds
 
     const schedule = () => {
       if (stopped) return;
@@ -908,6 +910,7 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
   const lastShowWorkAtRef = useRef<number>(0);
   const speechQueueRef = useRef<string[]>([]);
   const isSpeakingRef = useRef<boolean>(false);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   // Speech queue function to prevent overlapping TTS
   const speakText = (text: string) => {
@@ -919,7 +922,7 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
     processQueue();
   };
 
-  const processQueue = () => {
+  const processQueue = async () => {
     if (isSpeakingRef.current || speechQueueRef.current.length === 0) {
       return;
     }
@@ -929,26 +932,81 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
 
     isSpeakingRef.current = true;
     console.log(
-      "[Voice] 🔊 Speaking from queue:",
+      "[Voice] 🔊 Speaking from queue (Deepgram TTS):",
       nextText.substring(0, 50) + "..."
     );
 
     try {
-      window.speechSynthesis.cancel(); // Clear any stuck utterances
-      const u = new SpeechSynthesisUtterance(nextText);
+      // Try Deepgram TTS first
+      const response = await fetch("/api/tts/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: nextText,
+          voice: "aura-asteria-en", // Warm, friendly voice for tutoring
+        }),
+      });
+
+      if (
+        response.ok &&
+        response.headers.get("Content-Type")?.includes("audio")
+      ) {
+        // Deepgram success - play audio with Web Audio API
+        console.log("[Voice] ✅ Deepgram audio received");
+        const audioBuffer = await response.arrayBuffer();
+
+        // Initialize AudioContext if needed
+        if (!audioContextRef.current) {
+          audioContextRef.current = new (window.AudioContext ||
+            (window as any).webkitAudioContext)();
+        }
+        const audioCtx = audioContextRef.current;
+
+        const decodedAudio = await audioCtx.decodeAudioData(audioBuffer);
+        const source = audioCtx.createBufferSource();
+        source.buffer = decodedAudio;
+        source.connect(audioCtx.destination);
+
+        source.onended = () => {
+          console.log("[Voice] ✅ Finished speaking (Deepgram)");
+          isSpeakingRef.current = false;
+          setTimeout(() => processQueue(), 100);
+        };
+
+        source.start(0);
+      } else {
+        // Fallback to browser TTS
+        console.warn(
+          "[Voice] ⚠️ Deepgram unavailable, using browser TTS fallback"
+        );
+        useBrowserTTS(nextText);
+      }
+    } catch (err) {
+      console.error(
+        "[Voice] ❌ Deepgram TTS error, falling back to browser TTS:",
+        err
+      );
+      useBrowserTTS(nextText);
+    }
+  };
+
+  // Fallback browser TTS
+  const useBrowserTTS = (text: string) => {
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
       u.rate = 1.2;
       u.pitch = 1.1;
       u.volume = 1;
 
       u.onend = () => {
-        console.log("[Voice] ✅ Finished speaking");
+        console.log("[Voice] ✅ Finished speaking (browser fallback)");
         isSpeakingRef.current = false;
-        // Process next item in queue
         setTimeout(() => processQueue(), 100);
       };
 
       u.onerror = (err) => {
-        console.error("[Voice] ❌ TTS error:", err);
+        console.error("[Voice] ❌ Browser TTS error:", err);
         isSpeakingRef.current = false;
         setTimeout(() => processQueue(), 100);
       };
@@ -1186,8 +1244,14 @@ Based on this analysis, respond naturally about what you see in their work. Don'
     // If the user starts speaking, stop TTS and clear queue
     rec.onspeechstart = () => {
       try {
-        if (window.speechSynthesis.speaking || isSpeakingRef.current) {
+        if (isSpeakingRef.current) {
+          // Stop any browser TTS
           window.speechSynthesis.cancel();
+          // Stop any Web Audio API playback (Deepgram)
+          if (audioContextRef.current) {
+            audioContextRef.current.suspend();
+            setTimeout(() => audioContextRef.current?.resume(), 100);
+          }
           speechQueueRef.current = []; // Clear the queue
           isSpeakingRef.current = false;
           console.log(
@@ -1198,8 +1262,14 @@ Based on this analysis, respond naturally about what you see in their work. Don'
     };
     rec.onaudiostart = () => {
       try {
-        if (window.speechSynthesis.speaking || isSpeakingRef.current) {
+        if (isSpeakingRef.current) {
+          // Stop any browser TTS
           window.speechSynthesis.cancel();
+          // Stop any Web Audio API playback (Deepgram)
+          if (audioContextRef.current) {
+            audioContextRef.current.suspend();
+            setTimeout(() => audioContextRef.current?.resume(), 100);
+          }
           speechQueueRef.current = []; // Clear the queue
           isSpeakingRef.current = false;
           console.log(
