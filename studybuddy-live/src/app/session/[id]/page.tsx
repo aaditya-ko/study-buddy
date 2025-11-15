@@ -586,9 +586,10 @@ export default function SessionPage() {
 function CameraPane({ sessionId }: { sessionId: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [ready, setReady] = useState(false);
-  const [lastResult, setLastResult] = useState<string>("");
   const [ambientOn, setAmbientOn] = useState(true);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [hasFocus, setHasFocus] = useState(false);
+  const [lastEmotion, setLastEmotion] = useState<string>("neutral");
 
   useEffect(() => {
     async function init() {
@@ -607,7 +608,15 @@ function CameraPane({ sessionId }: { sessionId: string }) {
       }
     }
     init();
-  }, []);
+
+    // Check for highlighted problem periodically
+    const checkFocus = setInterval(() => {
+      const focus = sessionStorage.getItem(`focus:${sessionId}`);
+      setHasFocus(!!focus);
+    }, 500);
+
+    return () => clearInterval(checkFocus);
+  }, [sessionId]);
 
   // Ambient watcher
   useEffect(() => {
@@ -709,7 +718,7 @@ function CameraPane({ sessionId }: { sessionId: string }) {
       console.log(`[Camera] 🎭 EMOTION: ${emotion.toUpperCase()}`);
       console.log(`[Camera] 💭 REASONING: ${reasoning}`);
 
-      setLastResult(`${emotion} — ${reasoning}`);
+      setLastEmotion(emotion);
 
       // Save to sessionStorage for immediate use
       try {
@@ -735,7 +744,7 @@ function CameraPane({ sessionId }: { sessionId: string }) {
             session_id: sessionId,
             emotion: emotion,
             reasoning: reasoning,
-            check_type: "ambient", // Could be "manual" if triggered by button
+            check_type: "ambient",
           });
 
           console.log("[Camera] ✅ Emotion saved to database");
@@ -750,12 +759,15 @@ function CameraPane({ sessionId }: { sessionId: string }) {
       }
     } else {
       // Show Work analysis
-      console.log("[Camera] 📝 Show Work Analysis:", data);
-      setLastResult(
-        [data.praise, ...(data.observations || []), ...(data.questions || [])]
-          .filter(Boolean)
-          .join(" • ")
-      );
+      console.log("[Camera] 📝 SHOW WORK ANALYSIS COMPLETE:");
+      console.log("[Camera] 🎉 Praise:", data.praise || "—");
+      if (data.observations?.length) {
+        console.log("[Camera] 👀 Observations:", data.observations);
+      }
+      if (data.questions?.length) {
+        console.log("[Camera] ❓ Guiding Questions:", data.questions);
+      }
+
       try {
         sessionStorage.setItem(`activity:${sessionId}`, String(Date.now()));
       } catch {}
@@ -764,6 +776,22 @@ function CameraPane({ sessionId }: { sessionId: string }) {
 
   function startShowWorkCountdown() {
     if (!ready) return;
+
+    // Validate that a problem is highlighted
+    const focus = sessionStorage.getItem(`focus:${sessionId}`);
+    if (!focus) {
+      console.warn(
+        "[Camera] ⚠️ No problem highlighted - Show Work requires highlighting a problem first"
+      );
+      alert(
+        "⚠️ Please highlight a problem first using the Highlight button on the left."
+      );
+      return;
+    }
+
+    console.log(
+      "[Camera] 📝 Show Work triggered - analyzing student's written work"
+    );
     let n = 3;
     setCountdown(n);
     const id = setInterval(() => {
@@ -801,28 +829,26 @@ function CameraPane({ sessionId }: { sessionId: string }) {
           </div>
         ) : null}
       </div>
-      <div className="mt-3 grid grid-cols-2 gap-2">
+      <div className="mt-2 flex items-center justify-center">
+        <div className="chip text-xs">Emotion: {lastEmotion}</div>
+      </div>
+      <div className="mt-3 grid gap-2">
         <button
-          className="btn btn-accent text-sm"
-          onClick={() => {
-            console.log("[Camera] 🔍 Manual emotion check triggered");
-            captureAndAnalyze("ambient");
-          }}
-          disabled={!ready}
-          title="Analyze emotion now"
-        >
-          Analyze Emotion
-        </button>
-        <button
-          className="btn btn-accent text-sm"
+          className={`btn text-sm ${
+            hasFocus ? "btn-accent" : "bg-[color:var(--fg-muted)] opacity-60"
+          }`}
           onClick={startShowWorkCountdown}
-          disabled={!ready}
-          title="Show your work for feedback"
+          disabled={!ready || !hasFocus}
+          title={
+            hasFocus
+              ? "Show your work for feedback"
+              : "Highlight a problem first"
+          }
         >
-          Show Work
+          Show Work {!hasFocus && "🔒"}
         </button>
         <button
-          className="chip text-sm col-span-2"
+          className="chip text-sm"
           onClick={() => setAmbientOn((v) => !v)}
           aria-pressed={ambientOn}
           title="Toggle automatic emotion checks"
@@ -830,14 +856,6 @@ function CameraPane({ sessionId }: { sessionId: string }) {
           {ambientOn ? "⏸ Pause Auto-Check" : "▶ Resume Auto-Check"}
         </button>
       </div>
-      {lastResult ? (
-        <div className="mt-3 rounded-lg bg-[color:var(--bg-muted)] px-3 py-2 text-sm">
-          <div className="font-medium text-[color:var(--fg-strong)]">
-            Last Analysis:
-          </div>
-          <div className="mt-1 text-[color:var(--fg-muted)]">{lastResult}</div>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -1102,10 +1120,7 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="card p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="text-sm text-[color:var(--fg-muted)]">Voice</div>
-        <div className="chip">Emotion: {emotion}</div>
-      </div>
+      <div className="mb-3 text-sm text-[color:var(--fg-muted)]">Voice</div>
       <div className="flex items-center gap-2">
         <button className="btn btn-accent" onClick={toggle}>
           {isListening ? "Stop listening" : "Start listening"}
