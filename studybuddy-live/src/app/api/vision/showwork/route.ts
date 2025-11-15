@@ -8,6 +8,19 @@ export async function POST(req: NextRequest) {
 	const client = getAnthropic();
 
 	console.log("[SHOWWORK] Analyzing student's written work...");
+	
+	// Validate image data
+	if (!imageBase64 || typeof imageBase64 !== "string") {
+		console.error("[SHOWWORK] ❌ No valid imageBase64 provided");
+		return Response.json({
+			observations: [],
+			questions: [],
+			praise: "No image data received. Please try showing your work again.",
+		});
+	}
+	
+	console.log("[SHOWWORK] 📸 Image received, size:", Math.round(imageBase64.length / 1024), "KB");
+	
 	if (focusCropUrl) {
 		console.log("[SHOWWORK] 🎯 Highlighted problem crop INCLUDED - AI knows what problem student is working on");
 	} else {
@@ -23,90 +36,133 @@ export async function POST(req: NextRequest) {
 		});
 	}
 
+	// Extract base64 data (remove data:image/webp;base64, prefix if present)
+	const imageData = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
+	
+	if (!imageData || imageData.length === 0) {
+		console.error("[SHOWWORK] ❌ Invalid image data after extraction");
+		return Response.json({
+			observations: [],
+			questions: [],
+			praise: "Invalid image format. Please try again.",
+		});
+	}
+
 	const content: any[] = [
 		{
 			type: "image",
 			source: {
 				type: "base64" as const,
 				media_type: "image/webp" as const,
-				data: imageBase64.split(",")[1],
+				data: imageData,
 			},
 		},
 	];
 
 	if (focusCropUrl) {
-		content.unshift(
-			focusCropUrl.startsWith("data:")
-				? {
-						type: "image",
-						source: {
-							type: "base64" as const,
-							media_type: "image/webp" as const,
-							data: focusCropUrl.split(",")[1],
-						},
-				  }
-				: { type: "image", source: { type: "url" as const, url: focusCropUrl } }
-		);
+		console.log("[SHOWWORK] 📋 Focus crop size:", Math.round(focusCropUrl.length / 1024), "KB");
+		const focusData = focusCropUrl.startsWith("data:") ? focusCropUrl.split(",")[1] : focusCropUrl;
+		
+		content.unshift({
+			type: "image",
+			source: {
+				type: "base64" as const,
+				media_type: "image/webp" as const,
+				data: focusData,
+			},
+		});
 	}
 
 	const system = focusCropUrl
-		? `You are analyzing a student's handwritten work on a SPECIFIC PROBLEM they highlighted.
+		? `You are a warm, Socratic tutor analyzing a student's written work.
 
-IMAGE 1: The highlighted problem from their assignment (what they're supposed to solve)
-IMAGE 2: Their written work/attempt on paper
+IMAGE 1: The problem they're solving (from their assignment)
+IMAGE 2: Their handwritten work/attempt
 
-Your job:
-1. Compare their written work to what the problem asks
-2. Identify what they're doing well (praise)
-3. Notice patterns in their approach (observations)
-4. Ask 2 Socratic questions to guide them forward (questions)
+Analyze what you can see and return ONLY valid JSON (no markdown, no extra text):
+{
+  "praise": "One encouraging thing they did well",
+  "observations": ["Pattern or approach you notice", "Another observation"],
+  "questions": ["Guiding question to help them think?", "Another Socratic question?"]
+}
 
-Return JSON ONLY: {"praise": "string", "observations": ["string", "string"], "questions": ["string", "string"]}
+Be specific about what you see in their writing. If the image is unclear or you can't see written work, still provide helpful generic guidance based on the problem.`
+		: `You are analyzing a student's handwritten work (math, code, or diagrams).
 
-Tone: Warm, encouraging, specific. Reference their actual written work. Never give away the answer—guide them to discover it.`
-		: "You analyze a student's handwritten work (math/code/diagrams). Return JSON with keys observations[], questions[2], praise. Socratic tone. No final answers.";
+Return ONLY valid JSON (no markdown):
+{
+  "praise": "Something positive about their effort",
+  "observations": ["What you notice in their approach"],
+  "questions": ["Guiding question to help them progress?"]
+}
+
+If the image is unclear, provide encouraging generic feedback.`;
 
 	try {
+		console.log("[SHOWWORK] 📤 Sending request to Claude with", content.length, "image(s)");
+		
 		const message = await client.messages.create({
 			model: "claude-sonnet-4-20250514",
-			max_tokens: 500,
-			temperature: 0.4,
+			max_tokens: 600,
+			temperature: 0.5,
 			system,
 			messages: [
-					{
-						role: "user",
-						content: [
-							...content,
-							{
-								type: "text",
-								text: focusCropUrl
-									? "Analyze the student's written work (Image 2) in the context of the problem they're solving (Image 1). Return ONLY valid JSON: {\"praise\": \"what they did well\", \"observations\": [\"pattern 1\", \"pattern 2\"], \"questions\": [\"guiding question 1?\", \"guiding question 2?\"]}"
-									: "Given the images above (current-problem crop optional, then the student's paper), produce: {\"observations\": string[], \"questions\": string[2], \"praise\": string} and nothing else.",
-							},
-						],
-					},
+				{
+					role: "user",
+					content: [
+						...content,
+						{
+							type: "text",
+							text: focusCropUrl
+								? "Analyze the student's written work shown in Image 2, in the context of the problem from Image 1. Return ONLY valid JSON with praise, observations, and questions. No markdown, no code blocks."
+								: "Analyze the student's written work shown in the image. Return ONLY valid JSON with praise, observations array, and questions array. No markdown.",
+						},
+					],
+				},
 			],
 		});
 
-		const text = (message.content as any)[0]?.text ?? "{}";
+		console.log("[SHOWWORK] ✅ Received response from Claude");
+		let text = (message.content as any)[0]?.text ?? "{}";
+		console.log("[SHOWWORK] Raw response text:", text);
+		
+		// Clean up response - remove markdown code blocks if present
+		text = text.trim();
+		if (text.startsWith("```json")) {
+			text = text.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
+		} else if (text.startsWith("```")) {
+			text = text.replace(/^```\s*/, "").replace(/```\s*$/, "").trim();
+		}
+		
 		try {
 			const parsed = JSON.parse(text);
+			
+			// Validate structure and provide defaults
+			const result = {
+				praise: typeof parsed.praise === "string" ? parsed.praise : "Great effort on working through this!",
+				observations: Array.isArray(parsed.observations) ? parsed.observations : ["I can see you're working on this problem"],
+				questions: Array.isArray(parsed.questions) ? parsed.questions : ["What approach are you taking?", "What step are you working on right now?"]
+			};
+			
 			console.log("[SHOWWORK] ✅ Analysis complete:");
-			console.log("[SHOWWORK] 💬 Observations:", parsed.observations);
-			console.log("[SHOWWORK] ❓ Questions:", parsed.questions);
-			console.log("[SHOWWORK] 🎉 Praise:", parsed.praise);
-			return Response.json(parsed);
+			console.log("[SHOWWORK] 💬 Observations:", result.observations);
+			console.log("[SHOWWORK] ❓ Questions:", result.questions);
+			console.log("[SHOWWORK] 🎉 Praise:", result.praise);
+			return Response.json(result);
 		} catch (parseErr) {
 			console.error("[SHOWWORK] ❌ Failed to parse Claude response:", parseErr);
-			console.error("[SHOWWORK] Raw response:", text);
+			console.error("[SHOWWORK] Cleaned text:", text);
 			return Response.json({
-				observations: [],
-				questions: [],
-				praise: "I had trouble analyzing your work. Please try again or ensure your work is clearly visible.",
+				observations: ["I can see your work on the problem"],
+				questions: ["What approach are you considering?", "What's your next step?"],
+				praise: "Keep working through it - you're making progress!",
 			});
 		}
-	} catch (e) {
-		console.error("[SHOWWORK] ❌ Vision API error:", e);
+	} catch (e: any) {
+		console.error("[SHOWWORK] ❌ Vision API error:");
+		console.error("[SHOWWORK] Error message:", e?.message || "Unknown error");
+		console.error("[SHOWWORK] Error type:", e?.type || "Unknown type");
+		console.error("[SHOWWORK] Full error:", JSON.stringify(e, null, 2));
 		return Response.json({
 			observations: [],
 			questions: [],

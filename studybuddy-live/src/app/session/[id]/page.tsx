@@ -14,6 +14,8 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   PencilSquareIcon,
+  MicrophoneIcon,
+  StopIcon,
 } from "@heroicons/react/24/outline";
 import { getSupabaseClient } from "@/lib/supabase";
 import confetti from "canvas-confetti";
@@ -714,15 +716,19 @@ function CameraPane({ sessionId }: { sessionId: string }) {
     if (kind === "ambient") {
       const emotion = data.emotion || "neutral";
       const reasoning = data.reasoning || "No reasoning provided";
+      const compliment = (data.compliment || "").trim();
 
       console.log(`[Camera] 🎭 EMOTION: ${emotion.toUpperCase()}`);
       console.log(`[Camera] 💭 REASONING: ${reasoning}`);
+      console.log(`[Camera] 🤝 COMPLIMENT: ${compliment}`);
 
       setLastEmotion(emotion);
 
       // Save to sessionStorage for immediate use
       try {
         sessionStorage.setItem(`emotion:${sessionId}`, emotion);
+        // Store compliment for first-greeting icebreaker (always present now)
+        sessionStorage.setItem(`compliment:${sessionId}`, compliment);
       } catch {}
 
       // Persist to Supabase
@@ -766,6 +772,28 @@ function CameraPane({ sessionId }: { sessionId: string }) {
       }
       if (data.questions?.length) {
         console.log("[Camera] ❓ Guiding Questions:", data.questions);
+      }
+
+      // Log full JSON for debugging and traceability
+      try {
+        console.log(
+          "[Camera] 📦 Full Show Work analysis JSON:",
+          JSON.stringify(data)
+        );
+      } catch {}
+
+      // Store analysis + image so VoiceConsole can pipe it into AI conversation
+      try {
+        const payload = { ts: Date.now(), analysis: data, imageBase64: b64 };
+        sessionStorage.setItem(
+          `showwork:${sessionId}`,
+          JSON.stringify(payload)
+        );
+        console.log(
+          "[Camera] 💾 Stored Show Work analysis + image for conversation piping"
+        );
+      } catch (err) {
+        console.warn("[Camera] ⚠️ Failed to store Show Work analysis:", err);
       }
 
       try {
@@ -863,9 +891,9 @@ function CameraPane({ sessionId }: { sessionId: string }) {
 function VoiceConsole({ sessionId }: { sessionId: string }) {
   const [isListening, setIsListening] = useState(false);
   const [emotion, setEmotion] = useState<string>("neutral");
-  const [log, setLog] = useState<Array<{ role: "user" | "ai"; text: string }>>(
-    []
-  );
+  const [log, setLog] = useState<
+    Array<{ role: "user" | "ai"; text: string; workImage?: string }>
+  >([]);
   // Conversation history for API (separate from display log)
   const [conversationHistory, setConversationHistory] = useState<
     Array<{
@@ -877,22 +905,82 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
   const recogRef = useRef<any>(null);
   const activityAtRef = useRef<number>(Date.now());
   const hasGreetedRef = useRef(false);
+  const lastShowWorkAtRef = useRef<number>(0);
+  const speechQueueRef = useRef<string[]>([]);
+  const isSpeakingRef = useRef<boolean>(false);
 
-  // Initial AI greeting when PDF analysis completes
+  // Speech queue function to prevent overlapping TTS
+  const speakText = (text: string) => {
+    speechQueueRef.current.push(text);
+    console.log(
+      "[Voice] 📝 Added to speech queue. Queue length:",
+      speechQueueRef.current.length
+    );
+    processQueue();
+  };
+
+  const processQueue = () => {
+    if (isSpeakingRef.current || speechQueueRef.current.length === 0) {
+      return;
+    }
+
+    const nextText = speechQueueRef.current.shift();
+    if (!nextText) return;
+
+    isSpeakingRef.current = true;
+    console.log(
+      "[Voice] 🔊 Speaking from queue:",
+      nextText.substring(0, 50) + "..."
+    );
+
+    try {
+      window.speechSynthesis.cancel(); // Clear any stuck utterances
+      const u = new SpeechSynthesisUtterance(nextText);
+      u.rate = 1.2;
+      u.pitch = 1.1;
+      u.volume = 1;
+
+      u.onend = () => {
+        console.log("[Voice] ✅ Finished speaking");
+        isSpeakingRef.current = false;
+        // Process next item in queue
+        setTimeout(() => processQueue(), 100);
+      };
+
+      u.onerror = (err) => {
+        console.error("[Voice] ❌ TTS error:", err);
+        isSpeakingRef.current = false;
+        setTimeout(() => processQueue(), 100);
+      };
+
+      window.speechSynthesis.speak(u);
+    } catch (err) {
+      console.error("[Voice] ❌ Failed to speak:", err);
+      isSpeakingRef.current = false;
+      setTimeout(() => processQueue(), 100);
+    }
+  };
+
+  // Initial AI greeting when PDF analysis completes AND first compliment is captured
   useEffect(() => {
     if (hasGreetedRef.current) return;
 
     const checkForSummary = setInterval(async () => {
       const summary = sessionStorage.getItem(`courseSummary:${sessionId}`);
+      const compliment = sessionStorage.getItem(`compliment:${sessionId}`);
+
+      // Wait for both PDF summary AND compliment from first ambient check
       if (
         summary &&
         summary.startsWith("[STUB") === false &&
-        summary.startsWith("[ERROR") === false
+        summary.startsWith("[ERROR") === false &&
+        compliment &&
+        compliment.trim().length > 0
       ) {
         hasGreetedRef.current = true;
         clearInterval(checkForSummary);
 
-        console.log("[Voice] Generating initial AI greeting…");
+        console.log("[Voice] Generating initial AI greeting with compliment…");
 
         try {
           const resp = await fetch("/api/chat", {
@@ -902,10 +990,11 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
               messages: [
                 {
                   role: "user",
-                  content: `I just uploaded this document: "${summary}". Greet me warmly in 2 sentences and ask what I'd like to focus on or if I have any questions to start.`,
+                  content: `I just uploaded this document: "${summary}". Start with a warm greeting that includes this compliment: "${compliment}". Then ask me what I'm working on right now. Keep it to 2-3 sentences total, friendly and natural.`,
                 },
               ],
-              emotion: "neutral",
+              emotion:
+                sessionStorage.getItem(`emotion:${sessionId}`) || "neutral",
               courseContext: summary,
             }),
           });
@@ -924,14 +1013,12 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
           // Add to display log
           setLog([{ role: "ai", text: greeting }]);
 
-          // Speak it
+          // Speak it using queue
+          speakText(greeting);
+
+          // Mark compliment as used (prevent future re-use elsewhere)
           try {
-            window.speechSynthesis.cancel();
-            const u = new SpeechSynthesisUtterance(greeting);
-            u.rate = 0.95;
-            u.pitch = 1.1;
-            u.volume = 1;
-            window.speechSynthesis.speak(u);
+            sessionStorage.setItem(`complimentUsed:${sessionId}`, "1");
           } catch {}
 
           // Persist to Supabase
@@ -966,6 +1053,123 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
       if (a && a > activityAtRef.current) {
         activityAtRef.current = a;
       }
+
+      // Pull in latest Show Work analysis (if any) and append as a user note/message
+      try {
+        const raw = sessionStorage.getItem(`showwork:${sessionId}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          const ts = Number(parsed?.ts || 0);
+          const analysis = parsed?.analysis || {};
+          const imageBase64 = parsed?.imageBase64 || "";
+          if (ts && ts > lastShowWorkAtRef.current) {
+            lastShowWorkAtRef.current = ts;
+            const praise: string = analysis.praise || "";
+            const observations: string[] = Array.isArray(analysis.observations)
+              ? analysis.observations
+              : [];
+            const questions: string[] = Array.isArray(analysis.questions)
+              ? analysis.questions
+              : [];
+            // Format analysis for console logging
+            const shortObs = observations.slice(0, 2).join("; ");
+            const shortQs = questions.slice(0, 2).join(" ");
+            const summary = [
+              praise ? `Praise: ${praise}` : "",
+              shortObs ? `Observations: ${shortObs}` : "",
+              shortQs ? `Questions: ${shortQs}` : "",
+            ]
+              .filter(Boolean)
+              .join(" | ");
+
+            console.log(
+              "[Voice] 📎 Show Work analysis received (will use as context for AI response):",
+              {
+                praise,
+                observations: observations.slice(0, 2),
+                questions: questions.slice(0, 2),
+              }
+            );
+
+            // Build structured context for AI to generate a natural response
+            const analysisContext = `[SHOW WORK ANALYSIS - Use this to inform your response, but speak naturally]
+Praise: ${praise}
+Observations: ${observations.join("; ")}
+Questions to guide student: ${questions.join(" ")}
+
+Based on this analysis, respond naturally about what you see in their work. Don't read the analysis verbatim - synthesize it into a warm, conversational response.`;
+
+            // Add analysis as context, then immediately trigger AI response
+            const historyWithAnalysis = [
+              ...conversationHistory,
+              {
+                role: "user" as const,
+                content: analysisContext,
+              },
+            ];
+
+            // Get AI's natural response based on the work analysis
+            (async () => {
+              try {
+                const focus = sessionStorage.getItem(`focus:${sessionId}`);
+                const courseContext =
+                  sessionStorage.getItem(`courseSummary:${sessionId}`) || "N/A";
+
+                const resp = await fetch("/api/chat", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    messages: historyWithAnalysis,
+                    emotion: e || "neutral",
+                    courseContext,
+                  }),
+                });
+
+                const data = await resp.json();
+                const aiResponse = data.response as string;
+
+                console.log("[Voice] 🤖 AI response to Show Work:", aiResponse);
+
+                // Show AI's natural response in conversation with work thumbnail
+                setLog((l) => [
+                  ...l,
+                  { role: "ai", text: aiResponse, workImage: imageBase64 },
+                ]);
+
+                // Update conversation history with the AI's response
+                setConversationHistory([
+                  ...historyWithAnalysis,
+                  {
+                    role: "assistant" as const,
+                    content: aiResponse,
+                  },
+                ]);
+
+                // Speak the AI's natural response using queue
+                speakText(aiResponse);
+
+                // Persist to Supabase
+                const supa = getSupabaseClient();
+                if (supa) {
+                  await supa.from("messages").insert([
+                    {
+                      session_id: sessionId,
+                      role: "ai",
+                      text: aiResponse,
+                      emotion_at_time: e || "neutral",
+                    },
+                  ]);
+                }
+              } catch (err) {
+                console.error(
+                  "[Voice] Failed to get AI response to work:",
+                  err
+                );
+              }
+            })();
+          }
+        }
+      } catch {}
     }, 2000);
     return () => clearInterval(id);
   }, [sessionId]);
@@ -979,6 +1183,31 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
     rec.continuous = true;
     rec.interimResults = true;
     rec.lang = "en-US";
+    // If the user starts speaking, stop TTS and clear queue
+    rec.onspeechstart = () => {
+      try {
+        if (window.speechSynthesis.speaking || isSpeakingRef.current) {
+          window.speechSynthesis.cancel();
+          speechQueueRef.current = []; // Clear the queue
+          isSpeakingRef.current = false;
+          console.log(
+            "[Voice] ⛔ Stopped AI speech and cleared queue due to user speaking"
+          );
+        }
+      } catch {}
+    };
+    rec.onaudiostart = () => {
+      try {
+        if (window.speechSynthesis.speaking || isSpeakingRef.current) {
+          window.speechSynthesis.cancel();
+          speechQueueRef.current = []; // Clear the queue
+          isSpeakingRef.current = false;
+          console.log(
+            "[Voice] ⛔ Stopped AI speech and cleared queue (audio start)"
+          );
+        }
+      } catch {}
+    };
     rec.onresult = async (event: any) => {
       const idx = event.resultIndex;
       const isFinal = event.results[idx].isFinal;
@@ -1005,6 +1234,11 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
         if (focus) {
           console.log(
             "[Voice] 🎯 Including highlighted problem in conversation - AI knows current focus"
+          );
+        }
+        if (emotion && emotion !== "neutral") {
+          console.log(
+            `[Voice] 🎭 Student emotion: ${emotion.toUpperCase()} - AI will acknowledge this`
           );
         }
         console.log(
@@ -1058,15 +1292,8 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
           }
         } catch {}
 
-        // TTS
-        try {
-          window.speechSynthesis.cancel();
-          const u = new SpeechSynthesisUtterance(reply);
-          u.rate = 0.95;
-          u.pitch = 1.1;
-          u.volume = 1;
-          window.speechSynthesis.speak(u);
-        } catch {}
+        // TTS using queue
+        speakText(reply);
       }
     };
     recogRef.current = rec;
@@ -1090,14 +1317,7 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
               ? "Hey, this can get tough. Want to talk through what you're trying?"
               : "What are you thinking right now?";
           setLog((l) => [...l, { role: "ai", text: line }]);
-          try {
-            window.speechSynthesis.cancel();
-            const u = new SpeechSynthesisUtterance(line);
-            u.rate = 0.95;
-            u.pitch = 1.1;
-            u.volume = 1;
-            window.speechSynthesis.speak(u);
-          } catch {}
+          speakText(line);
         }
         schedule();
       }, ms * jitter);
@@ -1122,24 +1342,45 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
     <div className="card p-4">
       <div className="mb-3 text-sm text-[color:var(--fg-muted)]">Voice</div>
       <div className="flex items-center gap-2">
-        <button className="btn btn-accent" onClick={toggle}>
-          {isListening ? "Stop listening" : "Start listening"}
+        <button
+          className="btn btn-accent flex items-center gap-1.5"
+          onClick={toggle}
+        >
+          {isListening ? (
+            <>
+              <StopIcon className="h-4 w-4" />
+              Stop listening
+            </>
+          ) : (
+            <>
+              <MicrophoneIcon className="h-4 w-4" />
+              Start listening
+            </>
+          )}
         </button>
       </div>
-      <div className="mt-3 space-y-2">
-        {log.slice(-6).map((m, i) => (
-          <div
-            key={i}
-            className={`rounded-lg px-3 py-2 text-sm ${
-              m.role === "user"
-                ? "bg-[color:var(--bg-muted)]"
-                : "bg-[color:var(--accent-ink)]"
-            }`}
-          >
-            <span className="font-medium">
-              {m.role === "user" ? "You" : "AI"}:{" "}
-            </span>
-            {m.text}
+      <div className="mt-3 h-64 space-y-2 overflow-y-auto">
+        {log.map((m, i) => (
+          <div key={i}>
+            <div
+              className={`rounded-lg px-3 py-2 text-sm ${
+                m.role === "user"
+                  ? "bg-[color:var(--bg-muted)]"
+                  : "bg-[color:var(--accent-ink)]"
+              }`}
+            >
+              <span className="font-medium">
+                {m.role === "user" ? "You" : "Study Buddy"}:{" "}
+              </span>
+              {m.text}
+            </div>
+            {m.workImage && (
+              <img
+                src={m.workImage}
+                alt="Work shown"
+                className="mt-2 h-20 w-auto rounded border border-black/10"
+              />
+            )}
           </div>
         ))}
       </div>

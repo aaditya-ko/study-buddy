@@ -30,7 +30,10 @@ Valid emotion labels:
 - "breakthrough": Excited, smiling, sitting up, energetic
 - "neutral": Calm, relaxed, no strong emotion visible
 
-Respond with JSON: {"emotion": "label", "reasoning": "brief explanation of what you observe"}`;
+	IMPORTANT: Always produce a short, warm, genuine compliment based on what you can observe (e.g., clothing color/style like "nice hoodie", "cool shirt", glasses, headphones, room lighting like "great setup", hair, or just general positivity like "looking ready to tackle this"). NEVER return an empty compliment - be creative and friendly. Keep it casual and encouraging (5-8 words max).
+	
+	Respond with JSON ONLY:
+	{"emotion": "label", "reasoning": "brief explanation of what you observe", "compliment": "always include a short friendly phrase"} `;
 
 	const image = {
 		type: "image" as const,
@@ -52,10 +55,10 @@ Respond with JSON: {"emotion": "label", "reasoning": "brief explanation of what 
 					role: "user",
 					content: [
 						image,
-						{
-							type: "text",
-							text: "Analyze this student's emotional state and respond with JSON only: {\"emotion\": \"label\", \"reasoning\": \"what you observe\"}",
-						},
+					{
+						type: "text",
+							text: "Analyze this student's emotional state and return JSON only: {\"emotion\": \"label\", \"reasoning\": \"what you observe\", \"compliment\": \"REQUIRED short friendly phrase (5-8 words)\"}",
+					},
 					],
 				},
 			],
@@ -68,17 +71,32 @@ Respond with JSON: {"emotion": "label", "reasoning": "brief explanation of what 
 			const parsed = JSON.parse(text);
 			const emotion = parsed.emotion ?? "neutral";
 			const reasoning = parsed.reasoning ?? "Unable to determine";
+			let compliment = typeof parsed.compliment === "string" ? parsed.compliment.trim() : "";
+			
+			// Fallback: ensure we always have a compliment
+			if (!compliment || compliment.length === 0) {
+				const fallbacks = [
+					"love the focus",
+					"great study setup",
+					"looking ready to learn",
+					"nice vibe",
+					"ready to tackle this"
+				];
+				compliment = fallbacks[Math.floor(Math.random() * fallbacks.length)];
+				console.log("[EMOTION] ⚠️ No compliment from Claude, using fallback");
+			}
 			
 			console.log("[EMOTION] ✅ Detected:", emotion);
 			console.log("[EMOTION] 💭 Reasoning:", reasoning);
+			console.log("[EMOTION] 🤝 Compliment:", compliment);
 			
-			return Response.json({ emotion, reasoning });
+			return Response.json({ emotion, reasoning, compliment });
 		} catch (parseErr) {
 			console.error("[EMOTION] ❌ Failed to parse JSON:", parseErr);
-			return Response.json({ emotion: "neutral", reasoning: "Parse error" });
+			return Response.json({ emotion: "neutral", reasoning: "Parse error", compliment: "looking ready to learn" });
 		}
 	} catch (e: any) {
 		console.error("[EMOTION] ❌ API error:", e?.message || e);
-		return Response.json({ emotion: "neutral", reasoning: "API call failed" });
+		return Response.json({ emotion: "neutral", reasoning: "API call failed", compliment: "looking ready to learn" });
 	}
 }

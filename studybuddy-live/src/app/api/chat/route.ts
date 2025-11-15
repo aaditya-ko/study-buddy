@@ -30,6 +30,23 @@ export async function POST(req: NextRequest) {
 		console.log("[CHAT] 🎯 Highlighted problem INCLUDED - AI can reference the specific problem");
 	}
 
+	// Build emotion-aware guidance
+	const emotionGuidance: Record<string, string> = {
+		frustrated: "IMPORTANT: The student is FRUSTRATED right now. Start your response by acknowledging their struggle warmly (e.g., 'I can see this is really challenging - that's completely normal with this material!' or 'This is tough, and it's okay to feel stuck!'). Then offer gentle encouragement and break things down into smaller steps.",
+		confused: "IMPORTANT: The student is CONFUSED. Start by validating their confusion (e.g., 'This concept can be tricky at first' or 'It's totally normal to feel unclear here'). Then ask a clarifying question to understand what specifically is unclear.",
+		breakthrough: "IMPORTANT: The student is experiencing a BREAKTHROUGH moment! Celebrate their success enthusiastically (e.g., 'Yes! That's exactly it!' or 'You got it! Great insight!'). Reinforce what they did well.",
+		focused: "The student is FOCUSED and engaged. Keep your response supportive but concise to maintain their flow.",
+		neutral: ""
+	};
+
+	const emotionContext = emotion && emotion !== "neutral" 
+		? `\n\n${emotionGuidance[emotion] || ""}`
+		: "";
+
+	if (emotion && emotion !== "neutral") {
+		console.log(`[CHAT] 🎭 Emotion-aware mode: ${emotion.toUpperCase()} - AI will acknowledge this`);
+	}
+
 	const system = `You are a warm, Socratic tutor helping a student study. Student emotion: ${emotion ?? "neutral"}.
 Course context: ${courseContext ?? "N/A"}.
 
@@ -37,9 +54,8 @@ Guidelines:
 - Ask guiding questions rather than giving direct answers
 - Be encouraging and patient
 - Reference the course context naturally when relevant
-- If student is frustrated, be extra gentle and break things down
 - Keep responses conversational and brief (2-3 sentences usually)
-${hasFocusCrop ? "- The student has highlighted a SPECIFIC PROBLEM from their assignment (shown in an image). Reference it naturally when helping them think through their approach." : ""}`;
+${hasFocusCrop ? "- The student has highlighted a SPECIFIC PROBLEM from their assignment (shown in an image). Reference it naturally when helping them think through their approach." : ""}${emotionContext}`;
 
 	// Build conversation history
 	let conversationMessages: any[];
