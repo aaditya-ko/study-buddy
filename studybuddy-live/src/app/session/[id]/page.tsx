@@ -386,9 +386,38 @@ function CameraPane({ sessionId }: { sessionId: string }) {
 
       setLastResult(`${emotion} — ${reasoning}`);
 
+      // Save to sessionStorage for immediate use
       try {
         sessionStorage.setItem(`emotion:${sessionId}`, emotion);
       } catch {}
+
+      // Persist to Supabase
+      try {
+        const supa = getSupabaseClient();
+        if (supa) {
+          console.log("[Camera] 💾 Saving emotion to Supabase…");
+
+          // Update session's last_emotion
+          await supa
+            .from("sessions")
+            .update({
+              last_emotion: emotion,
+            })
+            .eq("id", sessionId);
+
+          // Log to emotion_checks history table
+          await supa.from("emotion_checks").insert({
+            session_id: sessionId,
+            emotion: emotion,
+            reasoning: reasoning,
+            check_type: "ambient", // Could be "manual" if triggered by button
+          });
+
+          console.log("[Camera] ✅ Emotion saved to database");
+        }
+      } catch (err) {
+        console.warn("[Camera] ⚠️ Failed to save emotion to Supabase:", err);
+      }
 
       if (emotion === "breakthrough") {
         console.log("[Camera] 🎉 Breakthrough detected! Triggering confetti…");
