@@ -6,10 +6,11 @@ export const runtime = "nodejs";
 export async function POST(req: NextRequest) {
 	console.log("[PDF-ANALYZE] Route called");
 	
-	const { imageBase64, imagesBase64 } = await req.json();
+	const { imageBase64, imagesBase64, context } = await req.json();
 	const images = imagesBase64 || (imageBase64 ? [imageBase64] : []);
+	const isHighlightedProblem = context === "highlighted_problem";
 	
-	console.log("[PDF-ANALYZE] Received", images.length, "image(s)");
+	console.log("[PDF-ANALYZE] Received", images.length, "image(s)", isHighlightedProblem ? "(HIGHLIGHTED PROBLEM)" : "");
 	
 	const client = getAnthropic();
 
@@ -31,8 +32,9 @@ export async function POST(req: NextRequest) {
 	
 	console.log("[PDF-ANALYZE] ✅ Client ready, preparing vision request…");
 
-	const system =
-		"You analyze the first few pages of a course assignment/problem set. Return a 2–3 sentence summary covering: course/topic, assignment type, key concepts (e.g. recursion, dynamic programming), and any problem numbering/structure you notice. Keep it warm and helpful.";
+	const system = isHighlightedProblem
+		? "You are analyzing a SPECIFIC PROBLEM the student just highlighted from their assignment. This is their CURRENT FOCUS. Describe what the problem asks, what concepts it tests, and what approach it requires. Be specific and helpful - this is what they're actively working on RIGHT NOW."
+		: "You analyze the first few pages of a course assignment/problem set. Return a 2–3 sentence summary covering: course/topic, assignment type, key concepts (e.g. recursion, dynamic programming), and any problem numbering/structure you notice. Keep it warm and helpful.";
 
 	const buildImage = (b64: string) => ({
 		type: "image" as const,
@@ -46,9 +48,13 @@ export async function POST(req: NextRequest) {
 	// Build content array with all images
 	const content: any[] = images.slice(0, 4).map(buildImage);
 	
+	const promptText = isHighlightedProblem
+		? "🎯 CURRENT PROBLEM: The student just highlighted this specific problem they're working on. Analyze it in detail: What is being asked? What concepts does it test? What's the expected approach? Be specific - this is their active focus right now."
+		: "Provide a concise 2–3 sentence course-context summary covering the assignment topic, structure, and key problem areas.";
+	
 	content.push({
 		type: "text",
-		text: "Provide a concise 2–3 sentence course-context summary covering the assignment topic, structure, and key problem areas.",
+		text: promptText,
 	});
 
 	console.log("[PDF-ANALYZE] Sending", content.length - 1, "image(s) to Claude Sonnet 4…");
@@ -68,7 +74,12 @@ export async function POST(req: NextRequest) {
 		});
 		
 		const summary = (message.content as any)[0]?.text?.trim?.() || "";
-		console.log("[PDF-ANALYZE] ✅ Success! Summary:", summary);
+		if (isHighlightedProblem) {
+			console.log("[PDF-ANALYZE] ✅ Success! HIGHLIGHTED PROBLEM ANALYSIS:");
+			console.log("[PDF-ANALYZE] 🎯", summary);
+		} else {
+			console.log("[PDF-ANALYZE] ✅ Success! Summary:", summary);
+		}
 		return Response.json({ summary });
 		
 	} catch (e: any) {

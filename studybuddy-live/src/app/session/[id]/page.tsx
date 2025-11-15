@@ -19,6 +19,7 @@ import { getSupabaseClient } from "@/lib/supabase";
 import confetti from "canvas-confetti";
 
 type FocusRect = { x: number; y: number; w: number; h: number } | null;
+type ResizeHandle = "nw" | "ne" | "sw" | "se" | null;
 
 export default function SessionPage() {
   const params = useParams<{ id: string }>();
@@ -27,10 +28,18 @@ export default function SessionPage() {
   const [numPages, setNumPages] = useState<number>(1);
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [focus, setFocus] = useState<FocusRect>(null);
+  // "isSelecting" means the highlight tool is active (armed).
   const [isSelecting, setIsSelecting] = useState(false);
+  // "isDragging" means the user is actively drawing/resizing a selection.
+  const [isDragging, setIsDragging] = useState(false);
   const pageRef = useRef<HTMLDivElement>(null);
   const startPoint = useRef<{ x: number; y: number } | null>(null);
   const [hasLoggedSummary, setHasLoggedSummary] = useState(false);
+  const [activeHandle, setActiveHandle] = useState<ResizeHandle>(null);
+  const [focusPage, setFocusPage] = useState<number | null>(null);
+  const [savingFocus, setSavingFocus] = useState<boolean>(false);
+  const [focusPreviewUrl, setFocusPreviewUrl] = useState<string | null>(null);
+  const [focusSavedBadge, setFocusSavedBadge] = useState<boolean>(false);
 
   useEffect(() => {
     const url = sessionStorage.getItem(`pdf:${sessionId}`);
@@ -125,13 +134,50 @@ export default function SessionPage() {
   // Selection overlay handlers
   function onMouseDown(e: React.MouseEvent) {
     if (!isSelecting || !pageRef.current) return;
+    // If a handle is active, ignore generic mousedown (handle handlers manage it)
     const rect = pageRef.current.getBoundingClientRect();
     startPoint.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     setFocus({ x: startPoint.current.x, y: startPoint.current.y, w: 0, h: 0 });
+    setIsDragging(true);
   }
   function onMouseMove(e: React.MouseEvent) {
-    if (!isSelecting || !pageRef.current || !startPoint.current) return;
+    if (!pageRef.current) return;
     const rect = pageRef.current.getBoundingClientRect();
+    // Handle resizing via handles
+    if (activeHandle && focus) {
+      const curX = e.clientX - rect.left;
+      const curY = e.clientY - rect.top;
+      let { x, y, w, h } = focus;
+      const minSize = 8;
+      if (activeHandle === "nw") {
+        const x2 = x + w;
+        const y2 = y + h;
+        x = Math.min(curX, x2 - minSize);
+        y = Math.min(curY, y2 - minSize);
+        w = x2 - x;
+        h = y2 - y;
+      } else if (activeHandle === "ne") {
+        const y2 = y + h;
+        const nx = Math.max(curX, x + minSize);
+        w = nx - x;
+        y = Math.min(curY, y2 - minSize);
+        h = y2 - y;
+      } else if (activeHandle === "sw") {
+        const x2 = x + w;
+        const ny = Math.max(curY, y + minSize);
+        h = ny - y;
+        x = Math.min(curX, x2 - minSize);
+        w = x2 - x;
+      } else if (activeHandle === "se") {
+        const nx = Math.max(curX, x + minSize);
+        const ny = Math.max(curY, y + minSize);
+        w = nx - x;
+        h = ny - y;
+      }
+      setFocus({ x, y, w, h });
+      return;
+    }
+    if (!isSelecting || !isDragging || !startPoint.current) return;
     const x = Math.min(startPoint.current.x, e.clientX - rect.left);
     const y = Math.min(startPoint.current.y, e.clientY - rect.top);
     const w = Math.abs(e.clientX - rect.left - startPoint.current.x);
@@ -140,43 +186,299 @@ export default function SessionPage() {
   }
   function onMouseUp() {
     startPoint.current = null;
-    setIsSelecting(false);
+    // Keep tool armed, but stop dragging
+    const wasResizing = Boolean(activeHandle);
+    setIsDragging(false);
+    setActiveHandle(null);
+    // Automatically confirm and persist once the user finishes drawing/resizing
+    if (focus && focus.w > 2 && focus.h > 2) {
+      confirmCurrentProblem();
+    }
   }
 
+  // Cancel selection
+  function cancelSelection() {
+    setIsSelecting(false);
+    setFocus(null);
+    setActiveHandle(null);
+    setFocusPreviewUrl(null);
+    setFocusPage(null);
+  }
+
+  // Remove highlight: clear selection and stored focus (local + supabase best-effort)
+  async function removeHighlight() {
+    cancelSelection();
+    try {
+      sessionStorage.removeItem(`focus:${sessionId}`);
+    } catch {}
+    try {
+      const supa = getSupabaseClient();
+      if (supa) {
+        await supa
+          .from("sessions")
+          .update({ current_problem_crop_url: null })
+          .eq("id", sessionId);
+      }
+    } catch {}
+  }
+
+  // High-DPI crop + Supabase persistence
   async function confirmCurrentProblem() {
-    if (!pageRef.current || !focus) return;
+    if (!pageRef.current || !focus || !pdfUrl) return;
+    if (focus.w < 3 || focus.h < 3) return;
     const canvas = pageRef.current.querySelector("canvas");
     if (!canvas) return;
     const pageBounds = pageRef.current.getBoundingClientRect();
     const scaleX = canvas.width / pageBounds.width;
     const scaleY = canvas.height / pageBounds.height;
 
-    const sx = Math.round(focus.x * scaleX);
-    const sy = Math.round(focus.y * scaleY);
-    const sw = Math.round(focus.w * scaleX);
-    const sh = Math.round(focus.h * scaleY);
+    // Initial quick preview (from displayed canvas)
+    const sx = Math.max(0, Math.round(focus.x * scaleX));
+    const sy = Math.max(0, Math.round(focus.y * scaleY));
+    const sw = Math.max(1, Math.round(focus.w * scaleX));
+    const sh = Math.max(1, Math.round(focus.h * scaleY));
+    const quick = document.createElement("canvas");
+    quick.width = sw;
+    quick.height = sh;
+    const qctx = quick.getContext("2d");
+    if (!qctx) return;
+    qctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+    const quickUrl = quick.toDataURL("image/webp", 0.85);
+    setFocusPreviewUrl(quickUrl);
 
-    const out = document.createElement("canvas");
-    out.width = Math.max(1, sw);
-    out.height = Math.max(1, sh);
-    const ctx = out.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
-    const dataUrl = out.toDataURL("image/webp", 0.9);
+    setSavingFocus(true);
     try {
-      sessionStorage.setItem(`focus:${sessionId}`, dataUrl);
-    } catch {}
+      // Normalize coordinates relative to displayed canvas
+      const nx = sx / canvas.width;
+      const ny = sy / canvas.height;
+      const nw = sw / canvas.width;
+      const nh = sh / canvas.height;
+
+      // High-DPI re-render of the page with pdfjs
+      // Ensure worker set here as well (safety)
+      try {
+        // @ts-ignore
+        pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+      } catch {}
+      const doc = await pdfjs.getDocument(pdfUrl).promise;
+      const page = await doc.getPage(pageNumber);
+      const viewport1 = page.getViewport({ scale: 1 });
+      const desiredWidth = Math.min(canvas.width * 3, 4000); // cap for safety
+      const hiScale = desiredWidth / viewport1.width;
+      const hiViewport = page.getViewport({ scale: hiScale });
+      const hiCanvas = document.createElement("canvas");
+      hiCanvas.width = Math.ceil(hiViewport.width);
+      hiCanvas.height = Math.ceil(hiViewport.height);
+      const hiCtx = hiCanvas.getContext("2d");
+      if (!hiCtx) throw new Error("No canvas context for high-DPI render");
+      await (page as any).render({
+        canvasContext: hiCtx as any,
+        viewport: hiViewport,
+      }).promise;
+
+      // Crop using normalized rectangle
+      const hsx = Math.max(0, Math.round(nx * hiCanvas.width));
+      const hsy = Math.max(0, Math.round(ny * hiCanvas.height));
+      const hsw = Math.max(1, Math.round(nw * hiCanvas.width));
+      const hsh = Math.max(1, Math.round(nh * hiCanvas.height));
+      const out = document.createElement("canvas");
+      out.width = hsw;
+      out.height = hsh;
+      const octx = out.getContext("2d");
+      if (!octx) throw new Error("No output canvas context");
+      octx.drawImage(hiCanvas, hsx, hsy, hsw, hsh, 0, 0, hsw, hsh);
+      const dataUrl = out.toDataURL("image/webp", 0.95);
+
+      // Persist locally
+      try {
+        sessionStorage.setItem(`focus:${sessionId}`, dataUrl);
+      } catch {}
+
+      // Best-effort: persist to Supabase Storage and update sessions row
+      try {
+        const supa = getSupabaseClient();
+        if (supa) {
+          const blob = dataUrlToBlob(dataUrl);
+          const ts = Date.now();
+          const path = `focus/${sessionId}/page-${pageNumber}-${ts}.webp`;
+          const { error: upErr } = await supa.storage
+            .from("studybuddy-frames")
+            .upload(path, blob, { contentType: "image/webp", upsert: true });
+          if (!upErr) {
+            const { data: pub } = supa.storage
+              .from("studybuddy-frames")
+              .getPublicUrl(path);
+            const publicUrl = (pub as any)?.publicUrl as string | undefined;
+            if (publicUrl) {
+              try {
+                sessionStorage.setItem(`focus:${sessionId}`, publicUrl);
+              } catch {}
+              await supa
+                .from("sessions")
+                .update({ current_problem_crop_url: publicUrl })
+                .eq("id", sessionId);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[Focus] Failed to persist to Supabase:", err);
+      }
+
+      setFocusSavedBadge(true);
+      setFocusPage(pageNumber);
+      // Hide success badge after a moment
+      setTimeout(() => setFocusSavedBadge(false), 2000);
+
+      // Immediately analyze the highlighted problem with Claude
+      console.log("[Focus] 🔍 Analyzing highlighted problem with Claude...");
+      try {
+        const courseContext =
+          sessionStorage.getItem(`courseSummary:${sessionId}`) || "N/A";
+        const analyzeResp = await fetch("/api/pdf/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imagesBase64: [dataUrl],
+            context: "highlighted_problem",
+          }),
+        });
+        const analyzeData = await analyzeResp.json();
+        console.log("[Focus] ✅ HIGHLIGHTED PROBLEM ANALYSIS:");
+        console.log("[Focus] 📋 Summary:", analyzeData.summary);
+        console.log(
+          "[Focus] 🎯 This is the CURRENT PROBLEM the student is working on."
+        );
+        console.log("[Focus] Context from full PDF:", courseContext);
+      } catch (analyzeErr) {
+        console.warn(
+          "[Focus] ⚠️ Failed to analyze highlighted problem:",
+          analyzeErr
+        );
+      }
+    } catch (err) {
+      console.error("[Focus] Failed to set current problem:", err);
+    } finally {
+      setSavingFocus(false);
+    }
+  }
+
+  // Convert data URL to Blob
+  function dataUrlToBlob(dataUrl: string): Blob {
+    const [meta, base64] = dataUrl.split(",");
+    const mimeMatch = meta.match(/data:(.*?);/);
+    const mime = mimeMatch ? mimeMatch[1] : "image/webp";
+    const binStr = atob(base64);
+    const len = binStr.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binStr.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
   }
 
   const selectionOverlay = useMemo(() => {
     if (!focus) return null;
     return (
       <div
-        className="pointer-events-none absolute border-2 border-dashed border-[color:var(--accent)]"
-        style={{ left: focus.x, top: focus.y, width: focus.w, height: focus.h }}
-      />
+        className="absolute"
+        style={{ left: 0, top: 0, right: 0, bottom: 0 }}
+      >
+        {/* Dim-out around selection using four rectangles */}
+        <div
+          className="absolute bg-black/10 pointer-events-none"
+          style={{ left: 0, top: 0, right: 0, height: focus.y }}
+        />
+        <div
+          className="absolute bg-black/10 pointer-events-none"
+          style={{ left: 0, top: focus.y, width: focus.x, height: focus.h }}
+        />
+        <div
+          className="absolute bg-black/10 pointer-events-none"
+          style={{
+            left: focus.x + focus.w,
+            top: focus.y,
+            right: 0,
+            height: focus.h,
+          }}
+        />
+        <div
+          className="absolute bg-black/10 pointer-events-none"
+          style={{
+            left: 0,
+            top: focus.y + focus.h,
+            right: 0,
+            bottom: 0,
+          }}
+        />
+        {/* Selection box */}
+        <div
+          className="absolute border-2 border-dashed border-[color:var(--accent)] pointer-events-none"
+          style={{
+            left: focus.x,
+            top: focus.y,
+            width: focus.w,
+            height: focus.h,
+          }}
+        />
+        {/* Resize handles */}
+        <div
+          className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-sm bg-[color:var(--accent)] shadow"
+          style={{ left: focus.x, top: focus.y }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setActiveHandle("nw");
+          }}
+        />
+        <div
+          className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-sm bg-[color:var(--accent)] shadow"
+          style={{ left: focus.x + focus.w, top: focus.y }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setActiveHandle("ne");
+          }}
+        />
+        <div
+          className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-sm bg-[color:var(--accent)] shadow"
+          style={{ left: focus.x, top: focus.y + focus.h }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setActiveHandle("sw");
+          }}
+        />
+        <div
+          className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-sm bg-[color:var(--accent)] shadow"
+          style={{ left: focus.x + focus.w, top: focus.y + focus.h }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setActiveHandle("se");
+          }}
+        />
+      </div>
     );
   }, [focus]);
+
+  // Keyboard: Esc to cancel selection
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        cancelSelection();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // If page changes and there is a focus selection from another page, clear it
+  useEffect(() => {
+    if (focus && focusPage !== null && focusPage !== pageNumber) {
+      setFocus(null);
+      setFocusPreviewUrl(null);
+      setFocusPage(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageNumber]);
 
   if (!pdfUrl) {
     return (
@@ -216,27 +518,35 @@ export default function SessionPage() {
             <button
               className="chip"
               onClick={() => {
-                setIsSelecting(true);
-                setFocus(null);
+                if (focus) {
+                  // Toggle off (Remove Highlight)
+                  removeHighlight();
+                } else {
+                  // Toggle on (enter highlight mode)
+                  setIsSelecting(true);
+                  setFocus(null);
+                  setActiveHandle(null);
+                  setFocusPreviewUrl(null);
+                  setFocusSavedBadge(false);
+                }
               }}
-              title="Highlight current problem"
+              title={focus ? "Remove Highlight" : "Highlight current problem"}
             >
               <PencilSquareIcon className="mr-1 inline-block h-4 w-4" />
-              Highlight
+              {focus ? "Remove Highlight" : "Highlight"}
             </button>
-            {focus ? (
-              <button
-                className="btn btn-accent"
-                onClick={confirmCurrentProblem}
-              >
-                Set current problem
-              </button>
+            {focusSavedBadge ? (
+              <div className="chip text-xs text-[color:var(--success)]">
+                Focus set
+              </div>
             ) : null}
           </div>
         </div>
 
         <div
-          className="relative overflow-hidden rounded-xl border border-black/5 bg-white"
+          className={`relative overflow-hidden rounded-xl border border-black/5 bg-white ${
+            isSelecting ? "cursor-crosshair" : ""
+          }`}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
@@ -251,6 +561,16 @@ export default function SessionPage() {
             {selectionOverlay}
           </div>
         </div>
+        {focusPreviewUrl ? (
+          <div className="mt-3 flex items-center gap-3">
+            <div className="text-xs text-[color:var(--fg-muted)]">Preview</div>
+            <img
+              src={focusPreviewUrl}
+              alt="Current problem preview"
+              className="h-20 w-auto rounded-md border border-black/10"
+            />
+          </div>
+        ) : null}
       </section>
 
       {/* Right: Camera + chat log stub */}
@@ -358,6 +678,11 @@ function CameraPane({ sessionId }: { sessionId: string }) {
         ? { imageBase64: b64 }
         : { imageBase64: b64, focusCropUrl: focus ?? undefined, lastTurns: [] };
 
+    if (kind === "showwork" && focus) {
+      console.log(
+        `[Camera] 🎯 Including highlighted problem crop in Show Work analysis`
+      );
+    }
     console.log(`[Camera] Sending to ${route}…`);
 
     const resp = await fetch(route, {
@@ -659,6 +984,11 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
 
         const updatedHistory = [...conversationHistory, newUserMessage];
 
+        if (focus) {
+          console.log(
+            "[Voice] 🎯 Including highlighted problem in conversation - AI knows current focus"
+          );
+        }
         console.log(
           "[Voice] Sending conversation with",
           updatedHistory.length,

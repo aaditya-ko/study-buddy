@@ -7,6 +7,13 @@ export async function POST(req: NextRequest) {
 	const { imageBase64, focusCropUrl, lastTurns } = await req.json();
 	const client = getAnthropic();
 
+	console.log("[SHOWWORK] Analyzing student's written work...");
+	if (focusCropUrl) {
+		console.log("[SHOWWORK] 🎯 Highlighted problem crop INCLUDED - AI knows what problem student is working on");
+	} else {
+		console.log("[SHOWWORK] ⚠️ No highlighted problem - analyzing work without problem context");
+	}
+
 	if (!client) {
 		// Dev stub: return a friendly generic structure
 		return Response.json({
@@ -42,8 +49,9 @@ export async function POST(req: NextRequest) {
 		);
 	}
 
-	const system =
-		"You analyze a student's handwritten work (math/code/diagrams). Return JSON with keys observations[], questions[2], praise. Socratic tone. No final answers.";
+	const system = focusCropUrl
+		? "You analyze a student's handwritten work. The FIRST image is the SPECIFIC PROBLEM they're working on (highlighted from their assignment). The SECOND image is their written work/attempt. Compare their work to what the problem asks. Return JSON with keys observations[], questions[2], praise. Socratic tone. Reference the problem naturally."
+		: "You analyze a student's handwritten work (math/code/diagrams). Return JSON with keys observations[], questions[2], praise. Socratic tone. No final answers.";
 
 	try {
 		const message = await client.messages.create({
@@ -69,6 +77,10 @@ export async function POST(req: NextRequest) {
 		const text = (message.content as any)[0]?.text ?? "{}";
 		try {
 			const parsed = JSON.parse(text);
+			console.log("[SHOWWORK] ✅ Analysis complete:");
+			console.log("[SHOWWORK] 💬 Observations:", parsed.observations);
+			console.log("[SHOWWORK] ❓ Questions:", parsed.questions);
+			console.log("[SHOWWORK] 🎉 Praise:", parsed.praise);
 			return Response.json(parsed);
 		} catch {
 			return Response.json({

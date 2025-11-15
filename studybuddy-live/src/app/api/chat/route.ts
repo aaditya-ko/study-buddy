@@ -12,6 +12,8 @@ export const runtime = "nodejs";
 export async function POST(req: NextRequest) {
 	const { transcript, messages, emotion, courseContext, focusCropUrl } = await req.json();
 	const client = getAnthropic();
+	
+	console.log("[CHAT] Processing student message...");
 
 	if (!client) {
 		// Fallback stub for local/dev without key
@@ -20,6 +22,12 @@ export async function POST(req: NextRequest) {
 				? "I can see this is getting tough. What are you trying to do with your current step?"
 				: "Got it. Tell me what you're thinking right now.";
 		return Response.json({ response: text });
+	}
+
+	// Check if ANY message in the conversation includes a focus crop
+	const hasFocusCrop = messages?.some((m: any) => m.focusCropUrl) || focusCropUrl;
+	if (hasFocusCrop) {
+		console.log("[CHAT] 🎯 Highlighted problem INCLUDED - AI can reference the specific problem");
 	}
 
 	const system = `You are a warm, Socratic tutor helping a student study. Student emotion: ${emotion ?? "neutral"}.
@@ -31,7 +39,7 @@ Guidelines:
 - Reference the course context naturally when relevant
 - If student is frustrated, be extra gentle and break things down
 - Keep responses conversational and brief (2-3 sentences usually)
-- If a highlighted problem image is shown, reference it implicitly`;
+${hasFocusCrop ? "- The student has highlighted a SPECIFIC PROBLEM from their assignment (shown in an image). Reference it naturally when helping them think through their approach." : ""}`;
 
 	// Build conversation history
 	let conversationMessages: any[];
