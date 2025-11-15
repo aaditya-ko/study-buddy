@@ -9,6 +9,7 @@ const PdfViewer = dynamic(
 );
 import "react-pdf/dist/Page/TextLayer.css";
 import "react-pdf/dist/Page/AnnotationLayer.css";
+import { pdfjs } from "react-pdf";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -29,6 +30,7 @@ export default function SessionPage() {
   const [isSelecting, setIsSelecting] = useState(false);
   const pageRef = useRef<HTMLDivElement>(null);
   const startPoint = useRef<{ x: number; y: number } | null>(null);
+  const [hasLoggedSummary, setHasLoggedSummary] = useState(false);
 
   useEffect(() => {
     const url = sessionStorage.getItem(`pdf:${sessionId}`);
@@ -38,6 +40,87 @@ export default function SessionPage() {
   function onDocumentLoad({ numPages: n }: { numPages: number }) {
     setNumPages(n);
   }
+
+  // Analyze multiple pages (up to 3) with Claude Vision and log to console (connectivity check)
+  useEffect(() => {
+    if (!pdfUrl || hasLoggedSummary) return;
+    const t = setTimeout(async () => {
+      try {
+        console.log("[StudyBuddy] Starting PDF analysis…");
+        // Ensure worker set for direct pdfjs usage here as well
+        try {
+          // @ts-ignore
+          pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+        } catch {}
+        console.log("[StudyBuddy] Loading PDF document…");
+        const doc = await pdfjs.getDocument(pdfUrl).promise;
+        const total = doc.numPages || 1;
+        const maxPages = Math.min(total, 3);
+        console.log(
+          `[StudyBuddy] PDF has ${total} page(s), analyzing first ${maxPages}…`
+        );
+        const images: string[] = [];
+        for (let i = 1; i <= maxPages; i++) {
+          console.log(`[StudyBuddy] Rendering page ${i}/${maxPages}…`);
+          const page = await doc.getPage(i);
+          const viewport = page.getViewport({ scale: 1.2 });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.ceil(viewport.width);
+          canvas.height = Math.ceil(viewport.height);
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            console.warn(
+              `[StudyBuddy] Failed to get canvas context for page ${i}`
+            );
+            continue;
+          }
+          await (page as any).render({ canvasContext: ctx as any, viewport })
+            .promise;
+          const dataUrl = canvas.toDataURL("image/webp", 0.85);
+          console.log(
+            `[StudyBuddy] Page ${i} rendered, size: ${Math.round(
+              dataUrl.length / 1024
+            )}KB`
+          );
+          images.push(dataUrl);
+        }
+        if (images.length > 0) {
+          console.log(
+            `[StudyBuddy] Sending ${images.length} page(s) to /api/pdf/analyze…`
+          );
+          const resp = await fetch("/api/pdf/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ imagesBase64: images }),
+          });
+          console.log(
+            "[StudyBuddy] API response status:",
+            resp.status,
+            resp.statusText
+          );
+          const data = await resp.json();
+          console.log("[StudyBuddy] API response data:", data);
+          if (data?.summary) {
+            console.log("[StudyBuddy] ✅ Course context:", data.summary);
+            try {
+              sessionStorage.setItem(
+                `courseSummary:${sessionId}`,
+                data.summary
+              );
+            } catch {}
+            setHasLoggedSummary(true);
+          } else {
+            console.warn("[StudyBuddy] ⚠️ No summary in response");
+          }
+        } else {
+          console.warn("[StudyBuddy] ⚠️ No images rendered from PDF");
+        }
+      } catch (e) {
+        console.error("[StudyBuddy] ❌ PDF analysis failed:", e);
+      }
+    }, 800);
+    return () => clearTimeout(t);
+  }, [pdfUrl, sessionId, hasLoggedSummary]);
 
   // Selection overlay handlers
   function onMouseDown(e: React.MouseEvent) {
@@ -185,6 +268,7 @@ function CameraPane({ sessionId }: { sessionId: string }) {
   const [ready, setReady] = useState(false);
   const [lastResult, setLastResult] = useState<string>("");
   const [ambientOn, setAmbientOn] = useState(true);
+  const [countdown, setCountdown] = useState<number | null>(null);
 
   useEffect(() => {
     async function init() {
@@ -289,18 +373,41 @@ function CameraPane({ sessionId }: { sessionId: string }) {
     }
   }
 
+  function startShowWorkCountdown() {
+    if (!ready) return;
+    let n = 3;
+    setCountdown(n);
+    const id = setInterval(() => {
+      n -= 1;
+      if (n <= 0) {
+        clearInterval(id);
+        setCountdown(null);
+        captureAndAnalyze("showwork");
+      } else {
+        setCountdown(n);
+      }
+    }, 1000);
+  }
+
   return (
     <div className="card p-4">
       <div className="mb-2 text-sm text-[color:var(--fg-muted)]">
         Live camera
       </div>
-      <div className="overflow-hidden rounded-lg bg-black/5">
+      <div className="relative overflow-hidden rounded-lg bg-black/5">
         <video
           ref={videoRef}
           className="h-56 w-full object-cover"
           muted
           playsInline
         />
+        {countdown !== null ? (
+          <div className="absolute inset-0 grid place-items-center">
+            <div className="grid h-20 w-20 place-items-center rounded-full bg-black/60 text-4xl font-semibold text-white">
+              {countdown}
+            </div>
+          </div>
+        ) : null}
       </div>
       <div className="mt-3 flex items-center gap-2">
         <button
@@ -312,7 +419,7 @@ function CameraPane({ sessionId }: { sessionId: string }) {
         </button>
         <button
           className="btn btn-accent"
-          onClick={() => captureAndAnalyze("showwork")}
+          onClick={startShowWorkCountdown}
           disabled={!ready}
         >
           Show Work
@@ -341,8 +448,89 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
   const [log, setLog] = useState<Array<{ role: "user" | "ai"; text: string }>>(
     []
   );
+  // Conversation history for API (separate from display log)
+  const [conversationHistory, setConversationHistory] = useState<Array<{
+    role: "user" | "assistant";
+    content: string;
+    focusCropUrl?: string;
+  }>>([]);
   const recogRef = useRef<any>(null);
   const activityAtRef = useRef<number>(Date.now());
+  const hasGreetedRef = useRef(false);
+
+  // Initial AI greeting when PDF analysis completes
+  useEffect(() => {
+    if (hasGreetedRef.current) return;
+    
+    const checkForSummary = setInterval(async () => {
+      const summary = sessionStorage.getItem(`courseSummary:${sessionId}`);
+      if (summary && summary.startsWith("[STUB") === false && summary.startsWith("[ERROR") === false) {
+        hasGreetedRef.current = true;
+        clearInterval(checkForSummary);
+        
+        console.log("[Voice] Generating initial AI greeting…");
+        
+        try {
+          const resp = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              messages: [
+                {
+                  role: "user",
+                  content: `I just uploaded this document: "${summary}". Greet me warmly in 2 sentences and ask what I'd like to focus on or if I have any questions to start.`
+                }
+              ],
+              emotion: "neutral",
+              courseContext: summary
+            })
+          });
+          
+          const data = await resp.json();
+          const greeting = data.response as string;
+          
+          console.log("[Voice] ✅ Initial greeting:", greeting);
+          
+          // Add to conversation history
+          setConversationHistory([
+            { role: "user", content: "Starting session" },
+            { role: "assistant", content: greeting }
+          ]);
+          
+          // Add to display log
+          setLog([{ role: "ai", text: greeting }]);
+          
+          // Speak it
+          try {
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(greeting);
+            u.rate = 0.95;
+            u.pitch = 1.1;
+            u.volume = 1;
+            window.speechSynthesis.speak(u);
+          } catch {}
+          
+          // Persist to Supabase
+          try {
+            const supa = getSupabaseClient();
+            if (supa) {
+              await supa.from("messages").insert([{
+                session_id: sessionId,
+                role: "ai",
+                text: greeting,
+                emotion_at_time: "neutral"
+              }]);
+            }
+          } catch {}
+          
+        } catch (e) {
+          console.error("[Voice] Failed to generate greeting:", e);
+        }
+      }
+    }, 500);
+    
+    return () => clearInterval(checkForSummary);
+  }, [sessionId]);
 
   useEffect(() => {
     // Simple bridge: reuse latest ambient result shown in CameraPane through sessionStorage
@@ -374,7 +562,8 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
         setLog((l) => [...l, { role: "user", text: transcript }]);
         activityAtRef.current = Date.now();
         const focus = sessionStorage.getItem(`focus:${sessionId}`);
-        const courseContext = "Course PDF context available"; // placeholder until summary
+        const courseContext =
+          sessionStorage.getItem(`courseSummary:${sessionId}`) || "N/A";
         const resp = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

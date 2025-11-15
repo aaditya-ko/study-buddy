@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
 
 	try {
 		const message = await client.messages.create({
-			model: "claude-3-5-sonnet-20240620",
+			model: "claude-sonnet-4-20250514",
 			max_tokens: 500,
 			temperature: 0.4,
 			system,
@@ -86,5 +86,3 @@ export async function POST(req: NextRequest) {
 		});
 	}
 }
-
-

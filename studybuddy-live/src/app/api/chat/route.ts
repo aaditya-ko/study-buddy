@@ -3,8 +3,14 @@ import { getAnthropic } from "@/lib/anthropic";
 
 export const runtime = "nodejs";
 
+/**
+ * Chat endpoint with full conversation memory.
+ * Accepts either:
+ * - Old format: { transcript, emotion, courseContext, focusCropUrl }
+ * - New format: { messages, emotion, courseContext, focusCropUrl }
+ */
 export async function POST(req: NextRequest) {
-	const { transcript, emotion, courseContext, focusCropUrl } = await req.json();
+	const { transcript, messages, emotion, courseContext, focusCropUrl } = await req.json();
 	const client = getAnthropic();
 
 	if (!client) {
@@ -16,33 +22,92 @@ export async function POST(req: NextRequest) {
 		return Response.json({ response: text });
 	}
 
-	const system = `You are a warm, Socratic tutor. Student emotion: ${emotion ?? "unknown"}.
+	const system = `You are a warm, Socratic tutor helping a student study. Student emotion: ${emotion ?? "neutral"}.
 Course context: ${courseContext ?? "N/A"}.
-If a current problem crop is provided, refer to it implicitly without giving the final answer. Keep replies brief (1–3 sentences).`;
 
-	const content: any[] = [{ type: "text", text: transcript ?? "" }];
-	if (focusCropUrl) {
-		// Send the crop URL as an image. If it's a data URL, pass it directly.
-    content.unshift({
-      type: "image",
-      source: focusCropUrl.startsWith("data:")
-        ? { type: "base64" as const, media_type: "image/webp" as const, data: focusCropUrl.split(",")[1] }
-        : { type: "url" as const, url: focusCropUrl },
-    });
+Guidelines:
+- Ask guiding questions rather than giving direct answers
+- Be encouraging and patient
+- Reference the course context naturally when relevant
+- If student is frustrated, be extra gentle and break things down
+- Keep responses conversational and brief (2-3 sentences usually)
+- If a highlighted problem image is shown, reference it implicitly`;
+
+	// Build conversation history
+	let conversationMessages: any[];
+	
+	if (messages && Array.isArray(messages)) {
+		// New format: full conversation history
+		console.log("[CHAT] Using conversation history with", messages.length, "messages");
+		conversationMessages = messages.map((msg: any) => {
+			if (msg.role === "assistant") {
+				return {
+					role: "assistant" as const,
+					content: msg.content
+				};
+			} else {
+				// User message - might have text + optional image
+				const content: any[] = [];
+				
+				// Add focus crop image if present in this turn
+				if (msg.focusCropUrl) {
+					content.push({
+						type: "image",
+						source: msg.focusCropUrl.startsWith("data:")
+							? { type: "base64" as const, media_type: "image/webp" as const, data: msg.focusCropUrl.split(",")[1] }
+							: { type: "url" as const, url: msg.focusCropUrl }
+					});
+				}
+				
+				// Add text
+				content.push({
+					type: "text",
+					text: msg.content || ""
+				});
+				
+				return {
+					role: "user" as const,
+					content
+				};
+			}
+		});
+	} else {
+		// Old format: single transcript (backward compatibility)
+		console.log("[CHAT] Using single transcript (legacy format)");
+		const content: any[] = [];
+		
+		if (focusCropUrl) {
+			content.push({
+				type: "image",
+				source: focusCropUrl.startsWith("data:")
+					? { type: "base64" as const, media_type: "image/webp" as const, data: focusCropUrl.split(",")[1] }
+					: { type: "url" as const, url: focusCropUrl }
+			});
+		}
+		
+		content.push({
+			type: "text",
+			text: transcript ?? ""
+		});
+		
+		conversationMessages = [{ role: "user" as const, content }];
 	}
 
-	const message = await client.messages.create({
-		model: "claude-3-5-sonnet-20240620",
-		max_tokens: 400,
-		temperature: 0.5,
-		system,
-		messages: [{ role: "user", content }],
-	});
-
 	try {
-		return Response.json({ response: (message.content as any)[0]?.text ?? "" });
-	} catch (e) {
-		console.warn("Chat error:", e);
+		const message = await client.messages.create({
+			model: "claude-sonnet-4-20250514",
+			max_tokens: 400,
+			temperature: 0.7,
+			system,
+			messages: conversationMessages,
+		});
+
+		const responseText = (message.content as any)[0]?.text ?? "";
+		console.log("[CHAT] ✅ Response generated:", responseText.substring(0, 100) + "...");
+		return Response.json({ response: responseText });
+		
+	} catch (e: any) {
+		console.error("[CHAT] ❌ Error:", e?.message || e);
 		const text =
 			emotion === "frustrated"
 				? "I can see this is getting tough. What are you trying to do with your current step?"
@@ -50,5 +115,3 @@ If a current problem crop is provided, refer to it implicitly without giving the
 		return Response.json({ response: text });
 	}
 }
-
-
