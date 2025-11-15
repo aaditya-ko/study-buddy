@@ -4,19 +4,33 @@ import { getAnthropic } from "@/lib/anthropic";
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
+	console.log("[EMOTION] Route called");
+	
 	const { imageBase64 } = await req.json();
 	const client = getAnthropic();
+	
 	if (!imageBase64) {
-		return Response.json({ emotion: "neutral" });
+		console.warn("[EMOTION] ❌ No image provided");
+		return Response.json({ emotion: "neutral", reasoning: "No image provided" });
 	}
 
 	if (!client) {
-		// No API key: return a deterministic "neutral" stub
-		return Response.json({ emotion: "neutral" });
+		console.warn("[EMOTION] ❌ No Anthropic client (ANTHROPIC_API_KEY missing)");
+		return Response.json({ emotion: "neutral", reasoning: "API key not configured" });
 	}
+	
+	console.log("[EMOTION] ✅ Client ready, analyzing webcam image…");
 
-	const system =
-		"Classify student emotion from a webcam still. Valid labels: focused, frustrated, confused, breakthrough, neutral. Respond with a single JSON object {\"emotion\":\"label\"}.";
+	const system = `You are analyzing a student's facial expression and body language from a webcam feed to determine their emotional state while studying.
+
+Valid emotion labels:
+- "focused": Alert, engaged, looking at work, concentrating
+- "frustrated": Tense, furrowed brow, hand on head, sighing posture
+- "confused": Puzzled expression, tilted head, uncertain look
+- "breakthrough": Excited, smiling, sitting up, energetic
+- "neutral": Calm, relaxed, no strong emotion visible
+
+Respond with JSON: {"emotion": "label", "reasoning": "brief explanation of what you observe"}`;
 
 	const image = {
 		type: "image" as const,
@@ -30,23 +44,41 @@ export async function POST(req: NextRequest) {
 	try {
 		const message = await client.messages.create({
 			model: "claude-sonnet-4-20250514",
-			max_tokens: 100,
-			temperature: 0,
+			max_tokens: 150,
+			temperature: 0.2,
 			system,
-			messages: [{ role: "user", content: [image, { type: "text", text: "Return JSON only." }] }],
+			messages: [
+				{
+					role: "user",
+					content: [
+						image,
+						{
+							type: "text",
+							text: "Analyze this student's emotional state and respond with JSON only: {\"emotion\": \"label\", \"reasoning\": \"what you observe\"}",
+						},
+					],
+				},
+			],
 		});
 
 		try {
 			const text = (message.content as any)[0]?.text ?? "{}";
+			console.log("[EMOTION] Raw response:", text);
+			
 			const parsed = JSON.parse(text);
-			return Response.json({ emotion: parsed.emotion ?? "neutral" });
-		} catch {
-			return Response.json({ emotion: "neutral" });
+			const emotion = parsed.emotion ?? "neutral";
+			const reasoning = parsed.reasoning ?? "Unable to determine";
+			
+			console.log("[EMOTION] ✅ Detected:", emotion);
+			console.log("[EMOTION] 💭 Reasoning:", reasoning);
+			
+			return Response.json({ emotion, reasoning });
+		} catch (parseErr) {
+			console.error("[EMOTION] ❌ Failed to parse JSON:", parseErr);
+			return Response.json({ emotion: "neutral", reasoning: "Parse error" });
 		}
-	} catch (e) {
-		console.warn("Ambient vision error:", e);
-		return Response.json({ emotion: "neutral" });
+	} catch (e: any) {
+		console.error("[EMOTION] ❌ API error:", e?.message || e);
+		return Response.json({ emotion: "neutral", reasoning: "API call failed" });
 	}
 }
-
-

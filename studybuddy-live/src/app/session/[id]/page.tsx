@@ -323,16 +323,32 @@ function CameraPane({ sessionId }: { sessionId: string }) {
   }, [ambientOn, sessionId]);
 
   async function captureAndAnalyze(kind: "showwork" | "ambient") {
-    if (!videoRef.current) return;
+    if (!videoRef.current) {
+      console.warn("[Camera] Video not ready");
+      return;
+    }
+
+    console.log(`[Camera] Capturing ${kind} image…`);
+
     const canvas = document.createElement("canvas");
     const target =
       kind === "ambient" ? { w: 512, h: 384 } : { w: 1024, h: 768 };
     canvas.width = target.w;
     canvas.height = target.h;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    if (!ctx) {
+      console.warn("[Camera] Failed to get canvas context");
+      return;
+    }
+
+    // Draw current video frame to canvas
     ctx.drawImage(videoRef.current, 0, 0, target.w, target.h);
     const b64 = canvas.toDataURL("image/webp", 0.85);
+
+    console.log(
+      `[Camera] Image captured, size: ${Math.round(b64.length / 1024)}KB`
+    );
+
     const focus = sessionStorage.getItem(`focus:${sessionId}`);
 
     const route =
@@ -341,27 +357,46 @@ function CameraPane({ sessionId }: { sessionId: string }) {
       kind === "ambient"
         ? { imageBase64: b64 }
         : { imageBase64: b64, focusCropUrl: focus ?? undefined, lastTurns: [] };
+
+    console.log(`[Camera] Sending to ${route}…`);
+
     const resp = await fetch(route, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+
+    console.log(`[Camera] Response status: ${resp.status}`);
+
     let data: any = {};
     try {
       data = await resp.json();
+      console.log(`[Camera] Response data:`, data);
     } catch (err) {
-      console.warn("Vision endpoint returned no JSON body", err);
+      console.error("[Camera] Failed to parse response:", err);
       return;
     }
+
     if (kind === "ambient") {
-      setLastResult(`Emotion: ${data.emotion}`);
+      const emotion = data.emotion || "neutral";
+      const reasoning = data.reasoning || "No reasoning provided";
+
+      console.log(`[Camera] 🎭 EMOTION: ${emotion.toUpperCase()}`);
+      console.log(`[Camera] 💭 REASONING: ${reasoning}`);
+
+      setLastResult(`${emotion} — ${reasoning}`);
+
       try {
-        sessionStorage.setItem(`emotion:${sessionId}`, data.emotion);
+        sessionStorage.setItem(`emotion:${sessionId}`, emotion);
       } catch {}
-      if (data.emotion === "breakthrough") {
+
+      if (emotion === "breakthrough") {
+        console.log("[Camera] 🎉 Breakthrough detected! Triggering confetti…");
         confetti({ particleCount: 120, spread: 70, origin: { y: 0.6 } });
       }
     } else {
+      // Show Work analysis
+      console.log("[Camera] 📝 Show Work Analysis:", data);
       setLastResult(
         [data.praise, ...(data.observations || []), ...(data.questions || [])]
           .filter(Boolean)
@@ -391,8 +426,11 @@ function CameraPane({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="card p-4">
-      <div className="mb-2 text-sm text-[color:var(--fg-muted)]">
-        Live camera
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-sm text-[color:var(--fg-muted)]">Live camera</div>
+        <div className="chip text-xs">
+          {ambientOn ? "Auto: ON" : "Auto: OFF"}
+        </div>
       </div>
       <div className="relative overflow-hidden rounded-lg bg-black/5">
         <video
@@ -409,33 +447,41 @@ function CameraPane({ sessionId }: { sessionId: string }) {
           </div>
         ) : null}
       </div>
-      <div className="mt-3 flex items-center gap-2">
+      <div className="mt-3 grid grid-cols-2 gap-2">
         <button
-          className="chip"
-          onClick={() => captureAndAnalyze("ambient")}
+          className="btn btn-accent text-sm"
+          onClick={() => {
+            console.log("[Camera] 🔍 Manual emotion check triggered");
+            captureAndAnalyze("ambient");
+          }}
           disabled={!ready}
+          title="Analyze emotion now"
         >
-          Ambient check
+          Analyze Emotion
         </button>
         <button
-          className="btn btn-accent"
+          className="btn btn-accent text-sm"
           onClick={startShowWorkCountdown}
           disabled={!ready}
+          title="Show your work for feedback"
         >
           Show Work
         </button>
         <button
-          className="chip"
+          className="chip text-sm col-span-2"
           onClick={() => setAmbientOn((v) => !v)}
           aria-pressed={ambientOn}
-          title="Toggle ambient checks"
+          title="Toggle automatic emotion checks"
         >
-          {ambientOn ? "Pause ambient" : "Resume ambient"}
+          {ambientOn ? "⏸ Pause Auto-Check" : "▶ Resume Auto-Check"}
         </button>
       </div>
       {lastResult ? (
-        <div className="mt-3 text-sm text-[color:var(--fg-muted)]">
-          {lastResult}
+        <div className="mt-3 rounded-lg bg-[color:var(--bg-muted)] px-3 py-2 text-sm">
+          <div className="font-medium text-[color:var(--fg-strong)]">
+            Last Analysis:
+          </div>
+          <div className="mt-1 text-[color:var(--fg-muted)]">{lastResult}</div>
         </div>
       ) : null}
     </div>
@@ -449,11 +495,13 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
     []
   );
   // Conversation history for API (separate from display log)
-  const [conversationHistory, setConversationHistory] = useState<Array<{
-    role: "user" | "assistant";
-    content: string;
-    focusCropUrl?: string;
-  }>>([]);
+  const [conversationHistory, setConversationHistory] = useState<
+    Array<{
+      role: "user" | "assistant";
+      content: string;
+      focusCropUrl?: string;
+    }>
+  >([]);
   const recogRef = useRef<any>(null);
   const activityAtRef = useRef<number>(Date.now());
   const hasGreetedRef = useRef(false);
@@ -461,15 +509,19 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
   // Initial AI greeting when PDF analysis completes
   useEffect(() => {
     if (hasGreetedRef.current) return;
-    
+
     const checkForSummary = setInterval(async () => {
       const summary = sessionStorage.getItem(`courseSummary:${sessionId}`);
-      if (summary && summary.startsWith("[STUB") === false && summary.startsWith("[ERROR") === false) {
+      if (
+        summary &&
+        summary.startsWith("[STUB") === false &&
+        summary.startsWith("[ERROR") === false
+      ) {
         hasGreetedRef.current = true;
         clearInterval(checkForSummary);
-        
+
         console.log("[Voice] Generating initial AI greeting…");
-        
+
         try {
           const resp = await fetch("/api/chat", {
             method: "POST",
@@ -478,28 +530,28 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
               messages: [
                 {
                   role: "user",
-                  content: `I just uploaded this document: "${summary}". Greet me warmly in 2 sentences and ask what I'd like to focus on or if I have any questions to start.`
-                }
+                  content: `I just uploaded this document: "${summary}". Greet me warmly in 2 sentences and ask what I'd like to focus on or if I have any questions to start.`,
+                },
               ],
               emotion: "neutral",
-              courseContext: summary
-            })
+              courseContext: summary,
+            }),
           });
-          
+
           const data = await resp.json();
           const greeting = data.response as string;
-          
+
           console.log("[Voice] ✅ Initial greeting:", greeting);
-          
+
           // Add to conversation history
           setConversationHistory([
             { role: "user", content: "Starting session" },
-            { role: "assistant", content: greeting }
+            { role: "assistant", content: greeting },
           ]);
-          
+
           // Add to display log
           setLog([{ role: "ai", text: greeting }]);
-          
+
           // Speak it
           try {
             window.speechSynthesis.cancel();
@@ -509,26 +561,27 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
             u.volume = 1;
             window.speechSynthesis.speak(u);
           } catch {}
-          
+
           // Persist to Supabase
           try {
             const supa = getSupabaseClient();
             if (supa) {
-              await supa.from("messages").insert([{
-                session_id: sessionId,
-                role: "ai",
-                text: greeting,
-                emotion_at_time: "neutral"
-              }]);
+              await supa.from("messages").insert([
+                {
+                  session_id: sessionId,
+                  role: "ai",
+                  text: greeting,
+                  emotion_at_time: "neutral",
+                },
+              ]);
             }
           } catch {}
-          
         } catch (e) {
           console.error("[Voice] Failed to generate greeting:", e);
         }
       }
     }, 500);
-    
+
     return () => clearInterval(checkForSummary);
   }, [sessionId]);
 
@@ -559,24 +612,54 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
       const isFinal = event.results[idx].isFinal;
       const transcript = event.results[idx][0].transcript;
       if (isFinal) {
+        console.log("[Voice] User said:", transcript);
+
         setLog((l) => [...l, { role: "user", text: transcript }]);
         activityAtRef.current = Date.now();
+
         const focus = sessionStorage.getItem(`focus:${sessionId}`);
         const courseContext =
           sessionStorage.getItem(`courseSummary:${sessionId}`) || "N/A";
+
+        // Build new conversation history with this user message
+        const newUserMessage = {
+          role: "user" as const,
+          content: transcript,
+          focusCropUrl: focus || undefined,
+        };
+
+        const updatedHistory = [...conversationHistory, newUserMessage];
+
+        console.log(
+          "[Voice] Sending conversation with",
+          updatedHistory.length,
+          "messages"
+        );
+
         const resp = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            transcript,
+            messages: updatedHistory,
             emotion,
             courseContext,
-            focusCropUrl: focus,
           }),
         });
+
         const data = await resp.json();
         const reply = data.response as string;
+
+        console.log("[Voice] AI replied:", reply);
+
+        // Update conversation history with AI response
+        const newAssistantMessage = {
+          role: "assistant" as const,
+          content: reply,
+        };
+
+        setConversationHistory([...updatedHistory, newAssistantMessage]);
         setLog((l) => [...l, { role: "ai", text: reply }]);
+
         // Persist (best-effort)
         try {
           const supa = getSupabaseClient();
@@ -597,6 +680,7 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
             ]);
           }
         } catch {}
+
         // TTS
         try {
           window.speechSynthesis.cancel();
@@ -609,7 +693,7 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
       }
     };
     recogRef.current = rec;
-  }, [emotion, sessionId]);
+  }, [emotion, sessionId, conversationHistory]);
 
   // Proactive check-ins on silence
   useEffect(() => {
