@@ -27,19 +27,24 @@ export async function POST(req: NextRequest) {
 		},
 	};
 
-	const message = await client.messages.create({
-		model: "claude-3-5-sonnet-20241022",
-		max_tokens: 100,
-		temperature: 0,
-		system,
-		messages: [{ role: "user", content: [image, { type: "text", text: "Return JSON only." }] }],
-	});
-
 	try {
-		const text = (message.content as any)[0]?.text ?? "{}";
-		const parsed = JSON.parse(text);
-		return Response.json({ emotion: parsed.emotion ?? "neutral" });
-	} catch {
+		const message = await client.messages.create({
+			model: "claude-3-5-sonnet-20240620",
+			max_tokens: 100,
+			temperature: 0,
+			system,
+			messages: [{ role: "user", content: [image, { type: "text", text: "Return JSON only." }] }],
+		});
+
+		try {
+			const text = (message.content as any)[0]?.text ?? "{}";
+			const parsed = JSON.parse(text);
+			return Response.json({ emotion: parsed.emotion ?? "neutral" });
+		} catch {
+			return Response.json({ emotion: "neutral" });
+		}
+	} catch (e) {
+		console.warn("Ambient vision error:", e);
 		return Response.json({ emotion: "neutral" });
 	}
 }

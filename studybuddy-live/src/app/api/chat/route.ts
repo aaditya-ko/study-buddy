@@ -32,14 +32,23 @@ If a current problem crop is provided, refer to it implicitly without giving the
 	}
 
 	const message = await client.messages.create({
-		model: "claude-3-5-sonnet-20241022",
+		model: "claude-3-5-sonnet-20240620",
 		max_tokens: 400,
 		temperature: 0.5,
 		system,
 		messages: [{ role: "user", content }],
 	});
 
-	return Response.json({ response: (message.content as any)[0]?.text ?? "" });
+	try {
+		return Response.json({ response: (message.content as any)[0]?.text ?? "" });
+	} catch (e) {
+		console.warn("Chat error:", e);
+		const text =
+			emotion === "frustrated"
+				? "I can see this is getting tough. What are you trying to do with your current step?"
+				: "Got it. Tell me what you're thinking right now.";
+		return Response.json({ response: text });
+	}
 }
 
 

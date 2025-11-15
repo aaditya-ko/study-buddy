@@ -45,31 +45,40 @@ export async function POST(req: NextRequest) {
 	const system =
 		"You analyze a student's handwritten work (math/code/diagrams). Return JSON with keys observations[], questions[2], praise. Socratic tone. No final answers.";
 
-	const message = await client.messages.create({
-		model: "claude-3-5-sonnet-20241022",
-		max_tokens: 500,
-		temperature: 0.4,
-		system,
-		messages: [
-			{
-				role: "user",
-				content: [
-					...content,
-					{
-						type: "text",
-						text:
-							"Given the images above (current-problem crop optional, then the student's paper), produce: {\"observations\": string[], \"questions\": string[2], \"praise\": string} and nothing else.",
-					},
-				],
-			},
-		],
-	});
-
-	const text = (message.content as any)[0]?.text ?? "{}";
 	try {
-		const parsed = JSON.parse(text);
-		return Response.json(parsed);
-	} catch {
+		const message = await client.messages.create({
+			model: "claude-3-5-sonnet-20240620",
+			max_tokens: 500,
+			temperature: 0.4,
+			system,
+			messages: [
+				{
+					role: "user",
+					content: [
+						...content,
+						{
+							type: "text",
+							text:
+								"Given the images above (current-problem crop optional, then the student's paper), produce: {\"observations\": string[], \"questions\": string[2], \"praise\": string} and nothing else.",
+						},
+					],
+				},
+			],
+		});
+
+		const text = (message.content as any)[0]?.text ?? "{}";
+		try {
+			const parsed = JSON.parse(text);
+			return Response.json(parsed);
+		} catch {
+			return Response.json({
+				observations: [],
+				questions: ["Tell me the goal of your function.", "Where is your base case handled?"],
+				praise: "Nice progress so far — you're thinking in the right direction.",
+			});
+		}
+	} catch (e) {
+		console.warn("Showwork vision error:", e);
 		return Response.json({
 			observations: [],
 			questions: ["Tell me the goal of your function.", "Where is your base case handled?"],

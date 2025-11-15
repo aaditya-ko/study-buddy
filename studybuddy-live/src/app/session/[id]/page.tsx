@@ -2,15 +2,20 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { Document, Page, pdfjs } from "react-pdf";
+import dynamic from "next/dynamic";
+const PdfViewer = dynamic(
+  () => import("./pdf-viewer").then((m) => m.PdfViewer),
+  { ssr: false }
+);
 import "react-pdf/dist/Page/TextLayer.css";
 import "react-pdf/dist/Page/AnnotationLayer.css";
-import { ArrowLeftIcon, ArrowRightIcon, PencilSquareIcon } from "@heroicons/react/24/outline";
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  PencilSquareIcon,
+} from "@heroicons/react/24/outline";
 import { getSupabaseClient } from "@/lib/supabase";
 import confetti from "canvas-confetti";
-
-// Use CDN worker to avoid bundling issues in demo builds
-pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
 type FocusRect = { x: number; y: number; w: number; h: number } | null;
 
@@ -46,8 +51,8 @@ export default function SessionPage() {
     const rect = pageRef.current.getBoundingClientRect();
     const x = Math.min(startPoint.current.x, e.clientX - rect.left);
     const y = Math.min(startPoint.current.y, e.clientY - rect.top);
-    const w = Math.abs((e.clientX - rect.left) - startPoint.current.x);
-    const h = Math.abs((e.clientY - rect.top) - startPoint.current.y);
+    const w = Math.abs(e.clientX - rect.left - startPoint.current.x);
+    const h = Math.abs(e.clientY - rect.top - startPoint.current.y);
     setFocus({ x, y, w, h });
   }
   function onMouseUp() {
@@ -93,7 +98,9 @@ export default function SessionPage() {
   if (!pdfUrl) {
     return (
       <main className="mx-auto flex min-h-dvh max-w-5xl items-center justify-center px-6">
-        <div className="text-[color:var(--fg-muted)]">No PDF found for this session.</div>
+        <div className="text-[color:var(--fg-muted)]">
+          No PDF found for this session.
+        </div>
       </main>
     );
   }
@@ -135,7 +142,10 @@ export default function SessionPage() {
               Highlight
             </button>
             {focus ? (
-              <button className="btn btn-accent" onClick={confirmCurrentProblem}>
+              <button
+                className="btn btn-accent"
+                onClick={confirmCurrentProblem}
+              >
                 Set current problem
               </button>
             ) : null}
@@ -149,9 +159,12 @@ export default function SessionPage() {
           onMouseUp={onMouseUp}
         >
           <div ref={pageRef} className="relative">
-            <Document file={pdfUrl} onLoadSuccess={onDocumentLoad}>
-              <Page pageNumber={pageNumber} width={760} renderTextLayer renderAnnotationLayer />
-            </Document>
+            <PdfViewer
+              file={pdfUrl}
+              pageNumber={pageNumber}
+              width={760}
+              onLoadSuccess={onDocumentLoad}
+            />
             {selectionOverlay}
           </div>
         </div>
@@ -199,8 +212,7 @@ function CameraPane({ sessionId }: { sessionId: string }) {
     let stopped = false;
     const intensity = (sessionStorage.getItem(`intensity:${sessionId}`) ??
       "standard") as "minimal" | "standard" | "high";
-    const base =
-      intensity === "minimal" ? 15 : intensity === "high" ? 6 : 10; // seconds
+    const base = intensity === "minimal" ? 15 : intensity === "high" ? 6 : 10; // seconds
 
     const schedule = () => {
       if (stopped) return;
@@ -250,7 +262,13 @@ function CameraPane({ sessionId }: { sessionId: string }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const data = await resp.json();
+    let data: any = {};
+    try {
+      data = await resp.json();
+    } catch (err) {
+      console.warn("Vision endpoint returned no JSON body", err);
+      return;
+    }
     if (kind === "ambient") {
       setLastResult(`Emotion: ${data.emotion}`);
       try {
@@ -273,15 +291,30 @@ function CameraPane({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="card p-4">
-      <div className="mb-2 text-sm text-[color:var(--fg-muted)]">Live camera</div>
+      <div className="mb-2 text-sm text-[color:var(--fg-muted)]">
+        Live camera
+      </div>
       <div className="overflow-hidden rounded-lg bg-black/5">
-        <video ref={videoRef} className="h-56 w-full object-cover" muted playsInline />
+        <video
+          ref={videoRef}
+          className="h-56 w-full object-cover"
+          muted
+          playsInline
+        />
       </div>
       <div className="mt-3 flex items-center gap-2">
-        <button className="chip" onClick={() => captureAndAnalyze("ambient")} disabled={!ready}>
+        <button
+          className="chip"
+          onClick={() => captureAndAnalyze("ambient")}
+          disabled={!ready}
+        >
           Ambient check
         </button>
-        <button className="btn btn-accent" onClick={() => captureAndAnalyze("showwork")} disabled={!ready}>
+        <button
+          className="btn btn-accent"
+          onClick={() => captureAndAnalyze("showwork")}
+          disabled={!ready}
+        >
           Show Work
         </button>
         <button
@@ -294,7 +327,9 @@ function CameraPane({ sessionId }: { sessionId: string }) {
         </button>
       </div>
       {lastResult ? (
-        <div className="mt-3 text-sm text-[color:var(--fg-muted)]">{lastResult}</div>
+        <div className="mt-3 text-sm text-[color:var(--fg-muted)]">
+          {lastResult}
+        </div>
       ) : null}
     </div>
   );
@@ -303,7 +338,9 @@ function CameraPane({ sessionId }: { sessionId: string }) {
 function VoiceConsole({ sessionId }: { sessionId: string }) {
   const [isListening, setIsListening] = useState(false);
   const [emotion, setEmotion] = useState<string>("neutral");
-  const [log, setLog] = useState<Array<{ role: "user" | "ai"; text: string }>>([]);
+  const [log, setLog] = useState<Array<{ role: "user" | "ai"; text: string }>>(
+    []
+  );
   const recogRef = useRef<any>(null);
   const activityAtRef = useRef<number>(Date.now());
 
@@ -322,7 +359,8 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
 
   useEffect(() => {
     const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) return;
     const rec = new SpeechRecognition();
     rec.continuous = true;
@@ -340,7 +378,12 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
         const resp = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript, emotion, courseContext, focusCropUrl: focus }),
+          body: JSON.stringify({
+            transcript,
+            emotion,
+            courseContext,
+            focusCropUrl: focus,
+          }),
         });
         const data = await resp.json();
         const reply = data.response as string;
@@ -350,8 +393,18 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
           const supa = getSupabaseClient();
           if (supa) {
             await supa.from("messages").insert([
-              { session_id: sessionId, role: "user", text: transcript, emotion_at_time: emotion },
-              { session_id: sessionId, role: "ai", text: reply, emotion_at_time: emotion },
+              {
+                session_id: sessionId,
+                role: "user",
+                text: transcript,
+                emotion_at_time: emotion,
+              },
+              {
+                session_id: sessionId,
+                role: "ai",
+                text: reply,
+                emotion_at_time: emotion,
+              },
             ]);
           }
         } catch {}
@@ -431,10 +484,14 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
           <div
             key={i}
             className={`rounded-lg px-3 py-2 text-sm ${
-              m.role === "user" ? "bg-[color:var(--bg-muted)]" : "bg-[color:var(--accent-ink)]"
+              m.role === "user"
+                ? "bg-[color:var(--bg-muted)]"
+                : "bg-[color:var(--accent-ink)]"
             }`}
           >
-            <span className="font-medium">{m.role === "user" ? "You" : "AI"}: </span>
+            <span className="font-medium">
+              {m.role === "user" ? "You" : "AI"}:{" "}
+            </span>
             {m.text}
           </div>
         ))}
@@ -442,5 +499,3 @@ function VoiceConsole({ sessionId }: { sessionId: string }) {
     </div>
   );
 }
-
-

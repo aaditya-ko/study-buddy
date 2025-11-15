@@ -46,9 +46,7 @@ export function UploadCard({ intensity }: { intensity: Intensity }) {
 
 	return (
 		<div
-			className={`card w-full max-w-xl mx-auto p-10 text-center select-none transition-colors ${
-				dragOver ? "ring-2 ring-[color:var(--accent)]" : ""
-			}`}
+			className={`w-full max-w-xl mx-auto text-center select-none`}
 			onDragOver={(e) => {
 				e.preventDefault();
 				setDragOver(true);
@@ -63,19 +61,14 @@ export function UploadCard({ intensity }: { intensity: Intensity }) {
 			<button
 				type="button"
 				onClick={onPick}
-				className="group mx-auto mb-6 grid h-28 w-28 place-items-center rounded-full border-2 border-dashed border-black/20 bg-[color:var(--bg-muted)] transition-colors hover:border-[color:var(--accent)]"
+				className={`group mx-auto grid h-40 w-40 place-items-center rounded-full border-2 border-dashed bg-[color:var(--bg-muted)] transition-colors ${
+					dragOver ? "border-[color:var(--accent)]" : "border-black/20 hover:border-[color:var(--accent)]"
+				}`}
+				aria-label="Upload PDF"
 			>
-				<PlusIcon className="h-10 w-10 text-black/60 group-hover:text-[color:var(--accent)]" />
+				<PlusIcon className="h-12 w-12 text-black/60 group-hover:text-[color:var(--accent)]" />
 			</button>
-			<div className="text-lg font-medium text-[color:var(--fg-strong)]">
-				Upload a PDF to get started
-			</div>
-			<div className="mt-2 text-sm text-[color:var(--fg-muted)]">
-				Drag & drop or click the plus
-			</div>
-			<div className="mt-6">
-				<button onClick={onPick} className="btn btn-accent">Choose PDF</button>
-			</div>
+			<div className="mt-4 text-lg font-medium text-[color:var(--fg-strong)]">Upload PDF</div>
 			{error ? (
 				<div className="mt-4 text-sm text-[color:var(--warning)]">{error}</div>
 			) : null}

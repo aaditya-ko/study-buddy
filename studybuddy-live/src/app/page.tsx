@@ -13,7 +13,17 @@ export default function Home() {
       </div>
       <UploadCard intensity={intensity} />
       <div className="w-full max-w-xl">
-        <IntensitySlider value={intensity} onChange={setIntensity} />
+        <IntensitySlider
+          value={intensity}
+          onChange={(v) => {
+            setIntensity(v);
+            // Persist lightweight preference and surface for debugging
+            try {
+              localStorage.setItem("supportLevel", v);
+            } catch {}
+            console.log("Support level:", v);
+          }}
+        />
       </div>
       <div className="mt-6 text-xs text-[color:var(--fg-muted)]">
         Tip: You can adjust intensity later in the session settings.
