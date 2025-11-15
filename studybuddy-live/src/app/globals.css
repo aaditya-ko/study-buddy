@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+/* Design tokens (Anthropic‑inspired, warm + calm) */
+:root {
+	/* Surfaces */
+	--bg-app: #fcfaf7; /* ivory */
+	--bg-surface: #ffffff;
+	--bg-muted: #f5f2ee;
+
+	/* Text */
+	--fg-strong: #0b0b0c; /* near black */
+	--fg: #1a1a1b;
+	--fg-muted: #5a5a5e;
+
+	/* Accents */
+	--accent: #3e63dd; /* indigo */
+	--accent-ink: #e7ecff;
+	--success: #2e7d32; /* emerald */
+	--warning: #b4690e;
+
+	/* Shape + effects */
+	--radius: 16px;
+	--shadow: 0 6px 22px rgba(17, 23, 41, 0.08), 0 2px 8px rgba(17, 23, 41, 0.06);
+}
+
+@theme inline {
+	--color-background: var(--bg-app);
+	--color-foreground: var(--fg);
+	--color-muted: var(--fg-muted);
+	--color-accent: var(--accent);
+	--color-success: var(--success);
+	--font-sans: var(--font-geist-sans);
+	--font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg-app: #0b0b0c;
+		--bg-surface: #0f1012;
+		--bg-muted: #16181c;
+		--fg-strong: #eceff4;
+		--fg: #e5e7eb;
+		--fg-muted: #9aa3b2;
+		--accent: #7aa2ff;
+		--accent-ink: #0b1229;
+		--success: #5bdc7c;
+	}
+}
+
+html,
+body {
+	height: 100%;
+}
+
+body {
+	background: var(--bg-app);
+	color: var(--fg);
+	font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+		Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, "Helvetica Neue",
+		Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+/* Primitives */
+.card {
+	background: var(--bg-surface);
+	border-radius: var(--radius);
+	box-shadow: var(--shadow);
+}
+
+.btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 9999px;
+	padding: 0.75rem 1rem;
+	background: var(--fg-strong);
+	color: #fff;
+	transition: transform 0.12s ease-out, box-shadow 0.12s ease-out,
+		background-color 0.12s ease-out;
+}
+
+.btn:hover {
+	transform: translateY(-1px);
+	box-shadow: 0 8px 24px rgba(17, 23, 41, 0.12);
+}
+
+.btn-accent {
+	background: var(--accent);
+}
+
+.chip {
+	border-radius: 9999px;
+	background: var(--bg-muted);
+	color: var(--fg);
+	padding: 0.25rem 0.5rem;
+}
