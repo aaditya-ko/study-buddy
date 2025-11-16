@@ -21,7 +21,7 @@ export function IntensitySlider(props: {
   const options: { key: Intensity; label: string; desc: string }[] = useMemo(
     () => [
       { key: "minimal", label: "Minimal", desc: "Fewer nudges" },
-      { key: "standard", label: "Standard", desc: "Balanced" },
+      { key: "standard", label: "Standard", desc: "" },
       { key: "high", label: "High", desc: "More proactive" },
     ],
     []
@@ -46,6 +46,10 @@ export function IntensitySlider(props: {
           aria-label="Support level"
           aria-valuetext={val}
           className="w-full"
+          style={{
+            // @ts-ignore - CSS custom property for gradient
+            "--range-progress": `${(index / 2) * 100}%`
+          }}
         />
         <datalist id="support-ticks">
           <option value={0}></option>

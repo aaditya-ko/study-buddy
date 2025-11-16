@@ -61,12 +61,19 @@ export function UploadCard({ intensity }: { intensity: Intensity }) {
 			<button
 				type="button"
 				onClick={onPick}
-				className={`group mx-auto grid h-40 w-40 place-items-center rounded-full border-2 border-dashed bg-[color:var(--bg-muted)] transition-colors ${
+				className={`group relative mx-auto grid h-40 w-40 place-items-center rounded-full border-2 border-dashed bg-[color:var(--bg-muted)] transition-colors overflow-hidden ${
 					dragOver ? "border-[color:var(--accent)]" : "border-black/20 hover:border-[color:var(--accent)]"
 				}`}
 				aria-label="Upload PDF"
 			>
-				<PlusIcon className="h-12 w-12 text-black/60 group-hover:text-[color:var(--accent)]" />
+				{/* Background illustration */}
+				<img 
+					src="/images/ImageUpload.png" 
+					alt="" 
+					className="absolute inset-0 h-full w-full object-cover opacity-40 group-hover:opacity-50 transition-opacity"
+				/>
+				{/* Plus icon overlaid */}
+				<PlusIcon className="relative h-12 w-12 text-black/60 group-hover:text-[color:var(--accent)] z-10" />
 			</button>
 			<div className="mt-4 text-lg font-medium text-[color:var(--fg-strong)]">Upload PDF</div>
 			{error ? (
